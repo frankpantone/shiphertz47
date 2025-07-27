@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "post-edit": ".claude/hooks/post-edit.sh",
+    "enabled": true
+  },
+  "git": {
+    "auto_commit": true,
+    "repository_url": "https://github.com/frankpantone/shiphertz47.git",
+    "default_branch": "main"
+  },
+  "project": {
+    "name": "Auto Logistics Platform",
+    "description": "Transportation request system for auto logistics companies"
+  }
+}
