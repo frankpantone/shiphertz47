@@ -437,7 +437,9 @@ export default function TransportationRequestPage() {
   }
 
   if (!user) {
-    router.push('/auth/login')
+    if (typeof window !== 'undefined') {
+      router.push('/auth/login')
+    }
     return null
   }
 
@@ -745,4 +747,5 @@ export default function TransportationRequestPage() {
 
 // Force dynamic rendering to avoid SSR issues with Google Maps
 export const dynamic = 'force-dynamic'
-export const revalidate = 0 
+export const revalidate = 0
+export const runtime = 'nodejs' 
