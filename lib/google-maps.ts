@@ -1,10 +1,10 @@
 import { Loader } from '@googlemaps/js-api-loader'
 
 let googleMapsLoader: Loader | null = null
-let googleMaps: typeof google.maps | null = null
+let googleMaps: any = null
 
 // Initialize Google Maps
-export const initializeGoogleMaps = async (): Promise<typeof google.maps> => {
+export const initializeGoogleMaps = async (): Promise<any> => {
   if (googleMaps) return googleMaps
 
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY

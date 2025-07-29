@@ -28,7 +28,9 @@ export default function LoginPage() {
         toast.success('Successfully logged in!')
         
         // Force a page refresh to update auth state across the app
-        window.location.href = redirectTo
+        if (typeof window !== 'undefined') {
+          window.location.href = redirectTo
+        }
       } else {
         console.error('❌ Login failed:', result.error)
         

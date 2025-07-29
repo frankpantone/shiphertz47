@@ -32,10 +32,10 @@ export async function POST(req: NextRequest) {
     // Handle the event
     switch (event.type) {
       case 'payment_intent.succeeded':
-        await handlePaymentSucceeded(event.data.object)
+        await handlePaymentSucceeded(event.data.object, supabase)
         break
       case 'payment_intent.payment_failed':
-        await handlePaymentFailed(event.data.object)
+        await handlePaymentFailed(event.data.object, supabase)
         break
       default:
         console.log(`🤷 Unhandled event type: ${event.type}`)
@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function handlePaymentSucceeded(paymentIntent: any) {
+async function handlePaymentSucceeded(paymentIntent: any, supabase: any) {
   try {
     console.log('✅ Payment succeeded:', paymentIntent.id)
 
@@ -117,7 +117,7 @@ async function handlePaymentSucceeded(paymentIntent: any) {
   }
 }
 
-async function handlePaymentFailed(paymentIntent: any) {
+async function handlePaymentFailed(paymentIntent: any, supabase: any) {
   try {
     console.log('❌ Payment failed:', paymentIntent.id)
 

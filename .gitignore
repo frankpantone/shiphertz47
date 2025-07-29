@@ -65,3 +65,11 @@ temp/
 # Claude Code specific (keep hooks but ignore logs)
 .claude/logs/
 .claude/temp/
+
+# Testing
+playwright-report/
+test-results/
+screenshots/
+
+# MCP configuration (contains sensitive data)
+mcp.json

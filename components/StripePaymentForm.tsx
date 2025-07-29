@@ -44,7 +44,7 @@ function PaymentForm({ clientSecret, quoteAmount, orderNumber, onSuccess, onErro
     const { error } = await stripe.confirmPayment({
       elements,
       confirmParams: {
-        return_url: `${window.location.origin}/requests`,
+        return_url: typeof window !== 'undefined' ? `${window.location.origin}/requests` : 'http://localhost:3000/requests',
       },
       redirect: 'if_required',
     })

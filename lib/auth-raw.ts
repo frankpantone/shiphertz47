@@ -89,7 +89,9 @@ export async function rawLogin(email: string, password: string): Promise<RawLogi
       expires_in: data.expires_in
     }
     
-    localStorage.setItem(`sb-${SUPABASE_URL.split('.')[0].split('//')[1]}-auth-token`, JSON.stringify(sessionData))
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`sb-${SUPABASE_URL.split('.')[0].split('//')[1]}-auth-token`, JSON.stringify(sessionData))
+    }
 
     // Fetch user profile with access token
     const profile = await getRawProfile(user.id, data.access_token)
@@ -118,7 +120,9 @@ export async function rawLogin(email: string, password: string): Promise<RawLogi
 export async function rawLogout(): Promise<{ success: boolean; error?: string }> {
   try {
     // Clear localStorage
-    localStorage.removeItem(`sb-${SUPABASE_URL.split('.')[0].split('//')[1]}-auth-token`)
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(`sb-${SUPABASE_URL.split('.')[0].split('//')[1]}-auth-token`)
+    }
     
     // Optionally call Supabase logout endpoint
     const response = await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
@@ -144,6 +148,16 @@ export async function rawLogout(): Promise<{ success: boolean; error?: string }>
  */
 export async function getRawSession(): Promise<RawSession> {
   try {
+    // Only access localStorage in browser environment
+    if (typeof window === 'undefined') {
+      return {
+        user: null,
+        profile: null,
+        loading: false,
+        error: null
+      }
+    }
+
     // Try to get session from localStorage first
     const sessionKey = `sb-${SUPABASE_URL.split('.')[0].split('//')[1]}-auth-token`
     const sessionData = localStorage.getItem(sessionKey)
@@ -337,7 +351,9 @@ export function isAdmin(profile: RawProfile | null): boolean {
  */
 export function requireAuth(session: RawSession): boolean {
   if (!session.user) {
-    window.location.href = '/auth/login'
+    if (typeof window !== 'undefined') {
+      window.location.href = '/auth/login'
+    }
     return false
   }
   return true
@@ -350,8 +366,86 @@ export function requireAdmin(session: RawSession): boolean {
   if (!requireAuth(session)) return false
   
   if (!isAdmin(session.profile)) {
-    window.location.href = '/dashboard'
+    if (typeof window !== 'undefined') {
+      window.location.href = '/dashboard'
+    }
     return false
   }
   return true
+}
+
+/**
+ * Create a quote using raw authentication
+ */
+export async function rawCreateQuote(quoteData: {
+  transportation_request_id: string
+  admin_id: string
+  base_price: number
+  fuel_surcharge?: number
+  additional_fees?: number
+  total_amount: number
+  estimated_pickup_date?: string | null
+  estimated_delivery_date?: string | null
+  is_active?: boolean
+}): Promise<{ success: boolean; data?: any; error?: string }> {
+  try {
+    console.log('🔍 Creating quote with raw auth...', quoteData)
+    
+    // Get access token from localStorage
+    if (typeof window === 'undefined') {
+      return { success: false, error: 'Not available in server environment' }
+    }
+
+    const sessionKey = `sb-${SUPABASE_URL.split('.')[0].split('//')[1]}-auth-token`
+    const sessionData = localStorage.getItem(sessionKey)
+    
+    if (!sessionData) {
+      return { success: false, error: 'No authentication session found' }
+    }
+
+    const session = JSON.parse(sessionData)
+    if (!session.access_token) {
+      return { success: false, error: 'No access token found' }
+    }
+
+    const headers: Record<string, string> = {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${session.access_token}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    }
+
+    console.log('🔍 Making authenticated request to create quote...')
+    
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/quotes`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        transportation_request_id: quoteData.transportation_request_id,
+        admin_id: quoteData.admin_id,
+        base_price: quoteData.base_price,
+        fuel_surcharge: quoteData.fuel_surcharge || 0,
+        additional_fees: quoteData.additional_fees || 0,
+        total_amount: quoteData.total_amount,
+        estimated_pickup_date: quoteData.estimated_pickup_date || null,
+        estimated_delivery_date: quoteData.estimated_delivery_date || null,
+        is_active: quoteData.is_active !== undefined ? quoteData.is_active : true
+      })
+    })
+
+    console.log('🔍 Quote creation response:', response.status, response.ok)
+
+    if (response.ok) {
+      const data = await response.json()
+      console.log('✅ Quote created successfully:', data)
+      return { success: true, data: Array.isArray(data) ? data[0] : data }
+    } else {
+      const errorText = await response.text()
+      console.error('❌ Quote creation failed:', response.status, errorText)
+      return { success: false, error: `Failed to create quote: ${errorText}` }
+    }
+  } catch (error: any) {
+    console.error('❌ Raw quote creation error:', error)
+    return { success: false, error: error.message || 'Unknown error' }
+  }
 } 

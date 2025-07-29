@@ -16,12 +16,22 @@ import {
   UserPlusIcon,
   UserCircleIcon,
   PaperClipIcon,
-  ArrowDownTrayIcon
+  ArrowDownTrayIcon,
+  CheckCircleIcon,
+  ClockIcon,
+  ExclamationTriangleIcon,
+  CurrencyDollarIcon,
+  ChatBubbleLeftEllipsisIcon,
+  DocumentDuplicateIcon,
+  EyeIcon,
+  PencilIcon,
+  ChevronRightIcon,
+  InformationCircleIcon
 } from '@heroicons/react/24/outline'
 import { useRawAuth } from '@/hooks/useRawAuth'
-import { getRawRequests, getRawProfile, updateRawRequest } from '@/lib/auth-raw'
+import { getRawRequests, getRawProfile, updateRawRequest, rawCreateQuote } from '@/lib/auth-raw'
 import { supabase } from '@/lib/supabase'
-import QuoteForm from '@/components/QuoteForm'
+import { Card, Button, Badge } from '@/components/ui'
 
 interface TransportationRequest {
   id: string
@@ -57,388 +67,364 @@ interface Vehicle {
   vehicle_trim?: string
   vehicle_engine?: string
   nhtsa_data?: any
-  created_at: string
+  created_at?: string
+  updated_at?: string
 }
 
 interface AdminProfile {
   id: string
   email: string
+  full_name?: string
   role: string
-}
-
-interface DocumentAttachment {
-  id: string
-  transportation_request_id: string
-  file_name: string
-  file_size: number
-  file_type: string
-  storage_path: string
-  uploaded_by: string
-  created_at: string
 }
 
 interface Quote {
   id: string
   transportation_request_id: string
-  admin_id: string
-  base_price: number
-  fuel_surcharge: number
-  additional_fees: number
   total_amount: number
   estimated_pickup_date?: string
   estimated_delivery_date?: string
-  terms_and_conditions?: string
-  notes?: string
   is_active: boolean
-  expires_at?: string
   created_at: string
-  updated_at: string
+}
+
+const statusConfig: Record<string, {
+  label: string
+  color: 'pending' | 'quoted' | 'accepted' | 'completed' | 'cancelled' | 'admin' | 'success' | 'warning' | 'danger'
+  icon: any
+  description: string
+  nextActions: string[]
+}> = {
+  pending: { 
+    label: 'Pending Review', 
+    color: 'warning', 
+    icon: ClockIcon,
+    description: 'Awaiting initial review and assignment',
+    nextActions: ['Assign Admin', 'Create Quote', 'Request Info']
+  },
+  quoted: { 
+    label: 'Quote Sent', 
+    color: 'quoted', 
+    icon: CurrencyDollarIcon,
+    description: 'Quote provided, awaiting customer response',
+    nextActions: ['Follow Up', 'Revise Quote', 'Mark Lost']
+  },
+  accepted: { 
+    label: 'Quote Accepted', 
+    color: 'accepted', 
+    icon: CheckCircleIcon,
+    description: 'Customer accepted quote, ready for pickup',
+    nextActions: ['Schedule Pickup', 'Assign Carrier', 'Update Status']
+  },
+  in_progress: { 
+    label: 'In Transit', 
+    color: 'admin', 
+    icon: TruckIcon,
+    description: 'Vehicle picked up and in transit',
+    nextActions: ['Update Location', 'Contact Carrier', 'Notify Customer']
+  },
+  completed: { 
+    label: 'Completed', 
+    color: 'completed', 
+    icon: CheckCircleIcon,
+    description: 'Vehicle delivered successfully',
+    nextActions: ['Request Feedback', 'Close Order', 'Generate Invoice']
+  },
+  cancelled: { 
+    label: 'Cancelled', 
+    color: 'cancelled', 
+    icon: ExclamationTriangleIcon,
+    description: 'Order cancelled by customer or admin',
+    nextActions: ['Archive', 'Contact Customer', 'Review Reason']
+  }
 }
 
 export default function OrderDetailPage() {
   const params = useParams()
   const router = useRouter()
-  const { user, adminAccess, redirectToLogin, redirectToDashboard } = useRawAuth()
+  const orderId = params.id as string
+  
+  console.log('🔍 OrderDetailPage rendering, orderId:', orderId)
+  
+  const { user, profile, adminAccess, redirectToLogin, redirectToDashboard } = useRawAuth()
+  
+  console.log('🔍 Auth state:', { 
+    hasUser: !!user, 
+    hasProfile: !!profile, 
+    adminAccess 
+  })
   
   const [order, setOrder] = useState<TransportationRequest | null>(null)
-  const [assignedAdminName, setAssignedAdminName] = useState<string>('')
-  const [adminUsers, setAdminUsers] = useState<AdminProfile[]>([])
-  const [attachments, setAttachments] = useState<DocumentAttachment[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>('')
-  const [claiming, setClaiming] = useState(false)
-  const [reassigning, setReassigning] = useState(false)
-  const [selectedAdminId, setSelectedAdminId] = useState<string>('')
-  const [viewingAttachment, setViewingAttachment] = useState<DocumentAttachment | null>(null)
-  const [attachmentUrl, setAttachmentUrl] = useState<string>('')
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
-  const [quotes, setQuotes] = useState<Quote[]>([])
-  const [showQuoteForm, setShowQuoteForm] = useState(false)
-  const [submittingQuote, setSubmittingQuote] = useState(false)
+  const [quote, setQuote] = useState<Quote | null>(null)
+  const [assignedAdmin, setAssignedAdmin] = useState<AdminProfile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState('overview')
+  const [updating, setUpdating] = useState(false)
+  const [showAssignModal, setShowAssignModal] = useState(false)
+  const [showQuoteModal, setShowQuoteModal] = useState(false)
+  const [showStatusModal, setShowStatusModal] = useState(false)
+  const [availableAdmins, setAvailableAdmins] = useState<AdminProfile[]>([])
+  const [documents, setDocuments] = useState<any[]>([])
 
   useEffect(() => {
-    console.log('🔍 Order Detail - Admin access check:', adminAccess)
-
     if (adminAccess === 'not-authenticated') {
-      console.log('❌ Not authenticated, redirecting to login')
       redirectToLogin()
       return
     }
     
     if (adminAccess === 'not-admin') {
-      console.log('❌ Not admin, redirecting to dashboard')
       redirectToDashboard()
       return
     }
     
     if (adminAccess === 'admin') {
-      console.log('✅ Admin access granted, loading order details')
       fetchOrderDetails()
     }
-  }, [adminAccess, redirectToLogin, redirectToDashboard])
+  }, [adminAccess, orderId])
 
   const fetchOrderDetails = async () => {
     try {
+      console.log('🔍 fetchOrderDetails started for orderId:', orderId)
       setLoading(true)
-      setError('')
+      setError(null) // Clear any previous errors
       
-      // Fetch all requests and find the specific order
-      const allRequests = await getRawRequests()
-      const foundOrder = allRequests.find(req => req.id === params.id)
+      // Check if supabase is available
+      if (!supabase) {
+        console.error('❌ Supabase not available')
+        setError('Database connection not available')
+        return
+      }
       
-      if (!foundOrder) {
+      // Fetch main order data
+      const requests = await getRawRequests()
+      const orderData = requests.find(r => r.id === orderId)
+      
+      if (!orderData) {
         setError('Order not found')
         return
       }
       
-      setOrder(foundOrder)
+      setOrder(orderData)
+
+      // Fetch vehicles
+      const { data: vehicleData } = await supabase
+        ?.from('vehicles')
+        ?.select('*')
+        ?.eq('transportation_request_id', orderId)
+        ?.order('created_at', { ascending: true }) || { data: null }
       
-      // Fetch assigned admin name if order is assigned
-      if (foundOrder.assigned_admin_id) {
-        try {
-          const adminProfile = await getRawProfile(foundOrder.assigned_admin_id)
-          setAssignedAdminName(adminProfile?.email || 'Unknown Admin')
-        } catch (err) {
-          console.warn('Failed to fetch admin profile:', err)
-          setAssignedAdminName('Unknown Admin')
-        }
+      setVehicles(vehicleData || [])
+
+      // Fetch quote
+      const { data: quoteData } = await supabase
+        ?.from('quotes')
+        ?.select('*')
+        ?.eq('transportation_request_id', orderId)
+        ?.eq('is_active', true)
+        ?.order('created_at', { ascending: false })
+        ?.limit(1)
+        ?.single() || { data: null }
+      
+      if (quoteData) {
+        setQuote(quoteData)
       }
 
-      // Fetch admin users for reassignment dropdown
-      await fetchAdminUsers()
+      // Fetch assigned admin
+      if (orderData.assigned_admin_id) {
+        const adminProfile = await getRawProfile(orderData.assigned_admin_id)
+        setAssignedAdmin(adminProfile)
+      }
 
-      // Fetch document attachments
-      await fetchAttachments(foundOrder.id)
+      // Fetch available admins for assignment
+      const { data: adminsData } = await supabase
+        ?.from('profiles')
+        ?.select('*')
+        ?.eq('role', 'admin')
+        ?.order('full_name', { ascending: true }) || { data: null }
       
-      // Fetch vehicles
-      await fetchVehicles(foundOrder.id)
+      setAvailableAdmins(adminsData || [])
+
+      // Fetch documents
+      const { data: documentsData } = await supabase
+        ?.from('document_attachments')
+        ?.select('*')
+        ?.eq('transportation_request_id', orderId)
+        ?.order('created_at', { ascending: false }) || { data: null }
       
-      // Fetch quotes
-      await fetchQuotes(foundOrder.id)
+      setDocuments(documentsData || [])
       
-    } catch (err) {
-      console.error('Failed to fetch order details:', err)
+    } catch (error) {
+      console.error('❌ Error fetching order details:', error)
       setError('Failed to load order details')
-      toast.error('Failed to load order details')
     } finally {
+      console.log('✅ fetchOrderDetails completed')
       setLoading(false)
     }
   }
 
-  const fetchAdminUsers = async () => {
+  const updateOrderStatus = async (newStatus: string) => {
+    if (!order) return
+    
     try {
-      // Fetch all requests to get admin IDs, then fetch their profiles
-      const allRequests = await getRawRequests()
-      const adminIds = Array.from(new Set(allRequests
-        .filter(r => r.assigned_admin_id)
-        .map(r => r.assigned_admin_id!)))
-      
-      // Add current user if not already in the list
-      if (user && !adminIds.includes(user.id)) {
-        adminIds.push(user.id)
-      }
-
-      const adminProfiles: AdminProfile[] = []
-      for (const adminId of adminIds) {
-        try {
-          const profile = await getRawProfile(adminId)
-          if (profile && profile.role === 'admin') {
-            adminProfiles.push({
-              id: adminId,
-              email: profile.email,
-              role: profile.role
-            })
-          }
-        } catch (err) {
-          console.warn(`Failed to fetch profile for admin ${adminId}:`, err)
-        }
-      }
-      
-      setAdminUsers(adminProfiles)
-    } catch (err) {
-      console.warn('Failed to fetch admin users:', err)
-    }
-  }
-
-  const fetchAttachments = async (requestId: string) => {
-    try {
-      console.log('📎 Fetching attachments for request:', requestId)
-      
-      // Use Supabase client instead of raw fetch for proper authentication
-      const { data: attachmentData, error } = await supabase
-        .from('document_attachments')
-        .select('*')
-        .eq('transportation_request_id', requestId)
-        .order('created_at', { ascending: false })
-
-      if (error) {
-        console.error('❌ Failed to fetch attachments:', error)
-        throw error
-      }
-
-      console.log('✅ Attachments fetched:', attachmentData?.length || 0)
-      setAttachments(attachmentData || [])
-      
-    } catch (err) {
-      console.warn('Failed to fetch attachments:', err)
-      setAttachments([])
-    }
-  }
-
-  const fetchVehicles = async (requestId: string) => {
-    try {
-      console.log('🚗 Fetching vehicles for request:', requestId)
-      
-      const { data: vehicleData, error } = await supabase
-        .from('vehicles')
-        .select('*')
-        .eq('transportation_request_id', requestId)
-        .order('created_at', { ascending: true })
-
-      if (error) {
-        console.error('❌ Failed to fetch vehicles:', error)
-        throw error
-      }
-
-      console.log('✅ Vehicles fetched:', vehicleData?.length || 0)
-      setVehicles(vehicleData || [])
-      
-    } catch (err) {
-      console.warn('Failed to fetch vehicles:', err)
-      setVehicles([])
-    }
-  }
-
-  const fetchQuotes = async (requestId: string) => {
-    try {
-      console.log('💰 Fetching quotes for request:', requestId)
-      
-      const { data: quotesData, error } = await supabase
-        .from('quotes')
-        .select('*')
-        .eq('transportation_request_id', requestId)
-        .order('created_at', { ascending: false })
-
-      if (error) {
-        console.error('❌ Failed to fetch quotes:', error)
-        throw error
-      }
-
-      console.log('✅ Quotes fetched:', quotesData?.length || 0)
-      setQuotes(quotesData || [])
-      
-    } catch (err) {
-      console.warn('Failed to fetch quotes:', err)
-      setQuotes([])
-    }
-  }
-
-  const createQuote = async (quoteData: {
-    base_price: number
-    fuel_surcharge: number
-    additional_fees: number
-    estimated_pickup_date?: string
-    estimated_delivery_date?: string
-    terms_and_conditions?: string
-    notes?: string
-    expires_at?: string
-  }) => {
-    if (!order || !user) return
-
-    try {
-      setSubmittingQuote(true)
-      console.log('💰 Creating quote for order:', order.id)
-
-      const total_amount = quoteData.base_price + quoteData.fuel_surcharge + quoteData.additional_fees
-
-      const { data: newQuote, error } = await supabase
-        .from('quotes')
-        .insert({
-          transportation_request_id: order.id,
-          admin_id: user.id,
-          base_price: quoteData.base_price,
-          fuel_surcharge: quoteData.fuel_surcharge,
-          additional_fees: quoteData.additional_fees,
-          total_amount: total_amount,
-          estimated_pickup_date: quoteData.estimated_pickup_date,
-          estimated_delivery_date: quoteData.estimated_delivery_date,
-          terms_and_conditions: quoteData.terms_and_conditions,
-          notes: quoteData.notes,
-          is_active: true,
-          expires_at: quoteData.expires_at
-        })
-        .select()
-        .single()
-
-      if (error) {
-        console.error('❌ Failed to create quote:', error)
-        throw error
-      }
-
-      console.log('✅ Quote created successfully:', newQuote)
-      toast.success('Quote created successfully!')
-      
-      // Refresh quotes
-      await fetchQuotes(order.id)
-      setShowQuoteForm(false)
-
-    } catch (err: any) {
-      console.error('💥 Quote creation error:', err)
-      toast.error(err.message || 'Failed to create quote')
+      setUpdating(true)
+      await updateRawRequest(order.id, { status: newStatus })
+      setOrder({ ...order, status: newStatus })
+      toast.success(`Order status updated to ${newStatus.replace('_', ' ')}`)
+    } catch (error) {
+      toast.error('Failed to update order status')
     } finally {
-      setSubmittingQuote(false)
+      setUpdating(false)
     }
   }
 
-  const viewAttachment = async (attachment: DocumentAttachment) => {
+  const assignAdmin = async (adminId: string) => {
+    if (!order) return
+    
     try {
-      console.log('👁️ Viewing attachment:', attachment.file_name)
-      console.log('📂 Storage path:', attachment.storage_path)
+      setUpdating(true)
+      await updateRawRequest(order.id, { assigned_admin_id: adminId })
       
-      // Try multiple approaches to get the file URL
+      const adminProfile = await getRawProfile(adminId)
+      setAssignedAdmin(adminProfile)
+      setOrder({ ...order, assigned_admin_id: adminId })
+      setShowAssignModal(false)
       
-      // Method 1: Try signed URL with longer expiry
-      let signedUrl = null
-      const { data: signedData, error: signedError } = await supabase.storage
+      toast.success(`Order assigned to ${adminProfile?.full_name || adminProfile?.email}`)
+    } catch (error) {
+      toast.error('Failed to assign admin')
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  const createQuote = async (quoteData: { total_amount: number; estimated_pickup_date?: string; estimated_delivery_date?: string }) => {
+    console.log('🔍 createQuote called with:', quoteData)
+    
+    if (!order) {
+      console.error('❌ No order available for quote creation')
+      toast.error('Order not found')
+      return
+    }
+    
+    if (!supabase) {
+      console.error('❌ Supabase not available for quote creation')
+      toast.error('Database connection not available')
+      return
+    }
+
+    if (!user?.id) {
+      console.error('❌ Admin user not available for quote creation')
+      toast.error('Admin authentication required')
+      return
+    }
+    
+    // Validate input data
+    if (!quoteData.total_amount || isNaN(quoteData.total_amount) || quoteData.total_amount <= 0) {
+      console.error('❌ Invalid quote amount:', quoteData.total_amount)
+      toast.error('Please enter a valid quote amount')
+      return
+    }
+    
+    try {
+      setUpdating(true)
+      console.log('🔍 Creating quote for order:', order.id)
+      
+      const insertData = {
+        transportation_request_id: order.id,
+        admin_id: user.id, // Add the current admin user ID
+        base_price: quoteData.total_amount, // Use total_amount as base_price for now
+        fuel_surcharge: 0, // Default to 0
+        additional_fees: 0, // Default to 0
+        total_amount: quoteData.total_amount,
+        estimated_pickup_date: quoteData.estimated_pickup_date || null,
+        estimated_delivery_date: quoteData.estimated_delivery_date || null,
+        is_active: true
+      }
+      
+      console.log('🔍 Insert data:', insertData)
+      
+      // Create quote using raw authentication
+      const result = await rawCreateQuote(insertData)
+      
+      if (!result.success) {
+        console.error('❌ Raw quote creation error:', result.error)
+        throw new Error(result.error || 'Failed to create quote')
+      }
+      
+      console.log('✅ Quote created successfully:', result.data)
+      const data = result.data
+      
+      setQuote(data)
+      setShowQuoteModal(false)
+      
+      // Update order status to quoted
+      await updateOrderStatus('quoted')
+      
+      toast.success('Quote created successfully')
+    } catch (error: any) {
+      console.error('❌ Quote creation failed:', error)
+      toast.error(`Failed to create quote: ${error.message || 'Unknown error'}`)
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  const handleViewDocument = async (doc: any) => {
+    try {
+      const { data, error } = await supabase.storage
         .from('documents')
-        .createSignedUrl(attachment.storage_path, 7200) // 2 hours
-
-      if (signedError) {
-        console.warn('⚠️ Signed URL failed:', signedError)
-      } else if (signedData?.signedUrl) {
-        signedUrl = signedData.signedUrl
-        console.log('✅ Got signed URL')
+        .createSignedUrl(doc.storage_path, 3600) // 1 hour expiry
+      
+      if (error) {
+        console.error('❌ Error creating signed URL:', error)
+        toast.error('Failed to generate view URL for document')
+        return
       }
-
-      // Method 2: Try public URL as fallback
-      if (!signedUrl) {
-        console.log('🔄 Trying public URL fallback...')
-        const { data: publicData } = supabase.storage
-          .from('documents')
-          .getPublicUrl(attachment.storage_path)
-        
-        if (publicData?.publicUrl) {
-          signedUrl = publicData.publicUrl
-          console.log('✅ Got public URL')
-        }
+      
+      if (data.signedUrl) {
+        window.open(data.signedUrl, '_blank')
+      } else {
+        toast.error('Unable to generate view URL for document')
       }
+    } catch (error) {
+      console.error('❌ Error viewing document:', error)
+      toast.error('Failed to view document')
+    }
+  }
 
-      // Method 3: Try downloading and creating blob URL
-      if (!signedUrl) {
-        console.log('🔄 Trying direct download approach...')
-        try {
-          const { data: fileData, error: downloadError } = await supabase.storage
-            .from('documents')
-            .download(attachment.storage_path)
-
-          if (!downloadError && fileData) {
-            const blob = new Blob([fileData], { type: attachment.file_type })
-            signedUrl = URL.createObjectURL(blob)
-            console.log('✅ Created blob URL')
-          } else {
-            console.warn('⚠️ Download failed:', downloadError)
-          }
-        } catch (downloadErr) {
-          console.warn('⚠️ Download error:', downloadErr)
-        }
-      }
-
-      if (!signedUrl) {
-        console.error('❌ All methods failed to get file URL')
-        toast.error('Failed to load file for viewing. Please check storage permissions.')
+  const handleDownloadDocument = async (doc: any) => {
+    try {
+      const { data, error } = await supabase.storage
+        .from('documents')
+        .download(doc.storage_path)
+      
+      if (error) {
+        console.error('❌ Error downloading document:', error)
+        toast.error('Failed to download document')
         return
       }
 
-      console.log('✅ Successfully got file URL')
-      setAttachmentUrl(signedUrl)
-      setViewingAttachment(attachment)
+      // Create blob URL and trigger download
+      const url = URL.createObjectURL(data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = doc.file_name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
       
-    } catch (err) {
-      console.error('View attachment error:', err)
-      toast.error('Failed to load file for viewing')
+      toast.success('Document downloaded successfully')
+    } catch (error) {
+      console.error('❌ Error downloading document:', error)
+      toast.error('Failed to download document')
     }
   }
 
-  const closeAttachmentModal = () => {
-    // Clean up blob URLs to prevent memory leaks
-    if (attachmentUrl && attachmentUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(attachmentUrl)
-    }
-    setViewingAttachment(null)
-    setAttachmentUrl('')
-  }
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes'
-    const k = 1024
-    const sizes = ['Bytes', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-  }
-
-  const formatDate = (dateString: string): string => {
-    const date = new Date(dateString)
-    return date.toLocaleDateString('en-US', {
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -447,92 +433,48 @@ export default function OrderDetailPage() {
     })
   }
 
-
-
-  const handleClaimOrder = async () => {
-    if (!user || !order) return
-    
-    setClaiming(true)
-    try {
-      const success = await updateRawRequest(order.id, {
-        assigned_admin_id: user.id,
-        status: 'quoted'
-      })
-
-      if (success) {
-        toast.success('Order claimed successfully!')
-        // Update local state
-        setOrder(prev => prev ? { ...prev, assigned_admin_id: user.id, status: 'quoted' } : null)
-        setAssignedAdminName(user.email || 'You')
-      } else {
-        toast.error('Failed to claim order')
-      }
-    } catch (error) {
-      console.error('Error claiming order:', error)
-      toast.error('Failed to claim order')
-    } finally {
-      setClaiming(false)
-    }
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(amount)
   }
 
-  const handleReassignOrder = async () => {
-    if (!selectedAdminId || !order) return
-    
-    setReassigning(true)
-    try {
-      const success = await updateRawRequest(order.id, {
-        assigned_admin_id: selectedAdminId
-      })
+  const tabs = [
+    { id: 'overview', name: 'Overview', icon: InformationCircleIcon },
+    { id: 'vehicles', name: 'Vehicles', icon: TruckIcon, count: vehicles.length },
+    { id: 'quote', name: 'Pricing', icon: CurrencyDollarIcon },
+    { id: 'documents', name: 'Documents', icon: DocumentTextIcon, count: documents.length },
+    { id: 'activity', name: 'Activity', icon: ClockIcon }
+  ]
 
-      if (success) {
-        const newAdminProfile = adminUsers.find(admin => admin.id === selectedAdminId)
-        toast.success(`Order reassigned to ${newAdminProfile?.email || 'admin'} successfully!`)
-        
-        // Update local state
-        setOrder(prev => prev ? { ...prev, assigned_admin_id: selectedAdminId } : null)
-        setAssignedAdminName(newAdminProfile?.email || 'Unknown Admin')
-        setSelectedAdminId('')
-      } else {
-        toast.error('Failed to reassign order')
-      }
-    } catch (error) {
-      console.error('Error reassigning order:', error)
-      toast.error('Failed to reassign order')
-    } finally {
-      setReassigning(false)
-    }
-  }
-
-
-
-  const getStatusBadge = (status: string) => {
-    const colors: Record<string, string> = {
-      pending: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-      quoted: 'bg-blue-100 text-blue-800 border-blue-200',
-      accepted: 'bg-green-100 text-green-800 border-green-200',
-      in_progress: 'bg-purple-100 text-purple-800 border-purple-200',
-      completed: 'bg-gray-100 text-gray-800 border-gray-200',
-      cancelled: 'bg-red-100 text-red-800 border-red-200'
-    }
-    
+  if (adminAccess === 'loading') {
     return (
-      <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium border ${colors[status] || 'bg-gray-100 text-gray-800 border-gray-200'}`}>
-        {status.replace('_', ' ').toUpperCase()}
-      </span>
+      <div className="min-h-screen bg-admin-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-admin-600 mx-auto"></div>
+          <p className="mt-4 text-admin-600">Loading...</p>
+        </div>
+      </div>
     )
   }
 
-  // Don't render anything if not admin (redirects are handled in useEffect)
   if (adminAccess !== 'admin') {
-    return null
+    return (
+      <div className="min-h-screen bg-admin-50 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-admin-600">Access denied. Redirecting...</p>
+        </div>
+      </div>
+    )
   }
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-admin-50 flex items-center justify-center">
         <div className="text-center">
-          <TruckIcon className="mx-auto h-12 w-12 text-gray-400 animate-pulse" />
-          <h3 className="mt-4 text-lg font-medium text-gray-900">Loading Order Details...</h3>
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-admin-600 mx-auto"></div>
+          <p className="mt-4 text-admin-600">Loading order details...</p>
         </div>
       </div>
     )
@@ -540,624 +482,861 @@ export default function OrderDetailPage() {
 
   if (error || !order) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-          <div className="text-center py-12">
-            <ClipboardDocumentListIcon className="mx-auto h-12 w-12 text-red-400" />
-            <h3 className="mt-4 text-lg font-medium text-gray-900">Order Not Found</h3>
-            <p className="mt-2 text-gray-600">{error || 'The requested order could not be found.'}</p>
-            <Link
-              href="/admin/orders/all"
-              className="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-            >
+      <div className="min-h-screen bg-admin-50">
+        <div className="max-w-7xl mx-auto py-12 px-6">
+          <Card className="text-center py-12">
+            <ClipboardDocumentListIcon className="mx-auto h-12 w-12 text-red-400 mb-4" />
+            <h3 className="text-lg font-medium text-admin-900 mb-2">Order Not Found</h3>
+            <p className="text-admin-600 mb-6">{error || 'The requested order could not be found.'}</p>
+            <Button onClick={() => router.push('/admin/orders/all')}>
               <ArrowLeftIcon className="h-4 w-4 mr-2" />
               Back to All Orders
-            </Link>
-          </div>
+            </Button>
+          </Card>
         </div>
       </div>
     )
   }
 
+  const currentStatus = statusConfig[order.status as keyof typeof statusConfig] || statusConfig.pending
+  const StatusIcon = currentStatus.icon
+
+  console.log('🔍 About to render, state:', {
+    order: !!order,
+    loading,
+    error,
+    adminAccess,
+    currentStatus: currentStatus.label
+  })
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        {/* Header */}
+    <>
+    <div className="min-h-screen bg-admin-50">
+      <div className="max-w-7xl mx-auto py-6 px-6">
+        {/* Header Section */}
         <div className="mb-8">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <Link
-                href="/admin/orders/all"
-                className="flex items-center text-sm text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                <ArrowLeftIcon className="h-4 w-4 mr-1" />
-                Back to All Orders
-              </Link>
+          {/* Breadcrumb */}
+          <nav className="flex items-center text-sm text-admin-600 mb-4">
+            <Link href="/admin/orders/all" className="hover:text-admin-900 transition-colors">
+              Orders
+            </Link>
+            <ChevronRightIcon className="h-4 w-4 mx-2" />
+            <span className="text-admin-900 font-medium">{order.order_number}</span>
+          </nav>
+
+          {/* Main Header */}
+          <div className="flex items-start justify-between">
+            <div className="flex items-start space-x-4">
+              <div className={`p-3 rounded-xl ${currentStatus.color === 'warning' ? 'bg-warning-100' : 
+                currentStatus.color === 'quoted' ? 'bg-trust-100' :
+                currentStatus.color === 'accepted' ? 'bg-primary-100' :
+                currentStatus.color === 'admin' ? 'bg-admin-100' :
+                currentStatus.color === 'completed' ? 'bg-success-100' :
+                currentStatus.color === 'cancelled' ? 'bg-red-100' : 'bg-admin-100'}`}>
+                <StatusIcon className={`h-8 w-8 ${currentStatus.color === 'warning' ? 'text-warning-600' :
+                currentStatus.color === 'quoted' ? 'text-trust-600' :
+                currentStatus.color === 'accepted' ? 'text-primary-600' :
+                currentStatus.color === 'admin' ? 'text-admin-600' :
+                currentStatus.color === 'completed' ? 'text-success-600' :
+                currentStatus.color === 'cancelled' ? 'text-red-600' : 'text-admin-600'}`} />
+              </div>
               <div>
-                <h1 className="text-3xl font-bold text-gray-900">Order Details</h1>
-                <p className="text-gray-600">Complete information for {order.order_number}</p>
+                <h1 className="text-3xl font-bold text-admin-900 mb-1">
+                  {order.order_number}
+                </h1>
+                <p className="text-admin-600 mb-2">{currentStatus.description}</p>
+                <div className="flex items-center space-x-4 text-sm text-admin-500">
+                  <span>Created {formatDate(order.created_at)}</span>
+                  <span>•</span>
+                  <span>Updated {formatDate(order.updated_at)}</span>
+                  {assignedAdmin && (
+                    <>
+                      <span>•</span>
+                      <span>Assigned to {assignedAdmin.full_name || assignedAdmin.email}</span>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
+            
             <div className="flex items-center space-x-3">
-              {getStatusBadge(order.status)}
+              <Badge variant={currentStatus.color} size="lg">
+                {currentStatus.label}
+              </Badge>
+              <Button variant="admin-secondary" size="sm">
+                <PencilIcon className="h-4 w-4" />
+                Edit
+              </Button>
             </div>
           </div>
         </div>
 
-        {/* Order Information Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column */}
-          <div className="space-y-6">
-            {/* Order Summary */}
-            <div className="bg-white shadow rounded-lg p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <ClipboardDocumentListIcon className="h-5 w-5 mr-2 text-blue-600" />
-                Order Summary
-              </h2>
-              <dl className="grid grid-cols-1 gap-4">
-                <div>
-                  <dt className="text-sm font-medium text-gray-500">Order Number</dt>
-                  <dd className="mt-1 text-lg font-semibold text-gray-900">{order.order_number}</dd>
-                </div>
-                <div>
-                  <dt className="text-sm font-medium text-gray-500">Current Status</dt>
-                  <dd className="mt-1">{getStatusBadge(order.status)}</dd>
-                </div>
-                <div>
-                  <dt className="text-sm font-medium text-gray-500">Assigned To</dt>
-                  <dd className="mt-1 text-sm">
-                    {order.assigned_admin_id ? (
-                      <div className="flex items-center space-x-2">
-                        <span className="font-medium text-gray-900">{assignedAdminName}</span>
-                        {order.assigned_admin_id === user?.id && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                            You
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-orange-600 font-medium">Unassigned - Available for claim</span>
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-sm font-medium text-gray-500">Created</dt>
-                  <dd className="mt-1 text-sm text-gray-900 flex items-center">
-                    <CalendarIcon className="h-4 w-4 mr-1 text-gray-400" />
-                    {formatDate(order.created_at)}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-sm font-medium text-gray-500">Last Updated</dt>
-                  <dd className="mt-1 text-sm text-gray-900 flex items-center">
-                    <CalendarIcon className="h-4 w-4 mr-1 text-gray-400" />
-                    {formatDate(order.updated_at)}
-                  </dd>
-                </div>
-              </dl>
+        {/* Quick Actions Bar */}
+        <Card className="mb-6 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-medium text-admin-900 mb-1">Quick Actions</h3>
+              <p className="text-sm text-admin-600">Common actions for {currentStatus.label.toLowerCase()} orders</p>
+            </div>
+            <div className="flex items-center space-x-2">
+              {currentStatus.nextActions.map((action) => (
+                <Button 
+                  key={action}
+                  variant="admin-secondary" 
+                  size="sm"
+                  onClick={() => {
+                    if (action === 'Assign Admin') {
+                      setShowAssignModal(true)
+                    } else if (action === 'Create Quote') {
+                      setShowQuoteModal(true)
+                    } else if (action === 'Schedule Pickup') {
+                      updateOrderStatus('in_progress')
+                    } else if (action === 'Mark Lost') {
+                      updateOrderStatus('cancelled')
+                    } else if (action === 'Close Order') {
+                      updateOrderStatus('completed')
+                    }
+                  }}
+                  loading={updating}
+                >
+                  {action}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </Card>
+
+        <div className="grid lg:grid-cols-4 gap-6">
+          {/* Main Content */}
+          <div className="lg:col-span-3">
+            {/* Tabs Navigation */}
+            <div className="border-b border-admin-200 mb-6">
+              <nav className="flex space-x-8">
+                {tabs.map((tab) => {
+                  const Icon = tab.icon
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`
+                        flex items-center py-4 px-1 border-b-2 font-medium text-sm transition-colors
+                        ${activeTab === tab.id
+                          ? 'border-admin-600 text-admin-600'
+                          : 'border-transparent text-admin-500 hover:text-admin-700 hover:border-admin-300'
+                        }
+                      `}
+                    >
+                      <Icon className="h-5 w-5 mr-2" />
+                      {tab.name}
+                      {tab.count !== undefined && (
+                        <span className="ml-2 bg-admin-100 text-admin-600 py-0.5 px-2 rounded-full text-xs">
+                          {tab.count}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </nav>
             </div>
 
+            {/* Tab Content */}
+            {activeTab === 'overview' && (
+              <div className="space-y-6">
+                {/* Route Information */}
+                <Card variant="admin">
+                  <div className="p-6">
+                    <h3 className="text-lg font-semibold text-admin-900 mb-6">Transportation Route</h3>
+                    
+                    <div className="grid md:grid-cols-2 gap-8">
+                      {/* Pickup */}
+                      <div className="relative">
+                        <div className="flex items-start">
+                          <div className="flex-shrink-0">
+                            <div className="w-10 h-10 bg-success-100 rounded-full flex items-center justify-center">
+                              <MapPinIcon className="h-5 w-5 text-success-600" />
+                            </div>
+                          </div>
+                          <div className="ml-4 flex-1">
+                            <h4 className="text-sm font-medium text-admin-900 mb-1">Pickup Location</h4>
+                            <div className="space-y-1">
+                              <p className="font-medium text-admin-900">{order.pickup_company_name}</p>
+                              <p className="text-sm text-admin-600">{order.pickup_company_address}</p>
+                              <div className="flex items-center space-x-4 mt-2">
+                                <div className="flex items-center text-sm text-admin-600">
+                                  <UserIcon className="h-4 w-4 mr-1" />
+                                  {order.pickup_contact_name}
+                                </div>
+                                <div className="flex items-center text-sm text-admin-600">
+                                  <PhoneIcon className="h-4 w-4 mr-1" />
+                                  {order.pickup_contact_phone}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
+                      {/* Delivery */}
+                      <div className="relative">
+                        <div className="flex items-start">
+                          <div className="flex-shrink-0">
+                            <div className="w-10 h-10 bg-primary-100 rounded-full flex items-center justify-center">
+                              <MapPinIcon className="h-5 w-5 text-primary-600" />
+                            </div>
+                          </div>
+                          <div className="ml-4 flex-1">
+                            <h4 className="text-sm font-medium text-admin-900 mb-1">Delivery Location</h4>
+                            <div className="space-y-1">
+                              <p className="font-medium text-admin-900">{order.delivery_company_name}</p>
+                              <p className="text-sm text-admin-600">{order.delivery_company_address}</p>
+                              <div className="flex items-center space-x-4 mt-2">
+                                <div className="flex items-center text-sm text-admin-600">
+                                  <UserIcon className="h-4 w-4 mr-1" />
+                                  {order.delivery_contact_name}
+                                </div>
+                                <div className="flex items-center text-sm text-admin-600">
+                                  <PhoneIcon className="h-4 w-4 mr-1" />
+                                  {order.delivery_contact_phone}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
 
-            {/* Special Notes */}
-            {order.notes && (
-              <div className="bg-white shadow rounded-lg p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                  <DocumentTextIcon className="h-5 w-5 mr-2 text-blue-600" />
-                  Special Notes
-                </h2>
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                  <p className="text-sm text-gray-700">{order.notes}</p>
-                </div>
+                {/* Vehicle Information */}
+                <Card variant="admin">
+                  <div className="p-6">
+                    <h3 className="text-lg font-semibold text-admin-900 mb-6">Vehicle Information</h3>
+                    
+                    {vehicles.length > 0 ? (
+                      <div className="space-y-4">
+                        {vehicles.map((vehicle, index) => (
+                          <div key={vehicle.id} className="border border-admin-200 rounded-lg p-4">
+                            <div className="flex items-start justify-between">
+                              <div className="flex items-start space-x-4">
+                                <div className="w-10 h-10 bg-trust-100 rounded-lg flex items-center justify-center">
+                                  <TruckIcon className="h-5 w-5 text-trust-600" />
+                                </div>
+                                <div>
+                                  <h4 className="font-medium text-admin-900">
+                                    {vehicle.vehicle_year} {vehicle.vehicle_make} {vehicle.vehicle_model}
+                                  </h4>
+                                  <p className="text-sm text-admin-600 font-mono">VIN: {vehicle.vin_number}</p>
+                                  {vehicle.vehicle_type && (
+                                    <p className="text-sm text-admin-600">Type: {vehicle.vehicle_type}</p>
+                                  )}
+                                </div>
+                              </div>
+                              <Button variant="admin-secondary" size="sm">
+                                <EyeIcon className="h-4 w-4" />
+                                View Details
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="border border-admin-200 rounded-lg p-4">
+                        <div className="flex items-start space-x-4">
+                          <div className="w-10 h-10 bg-trust-100 rounded-lg flex items-center justify-center">
+                            <TruckIcon className="h-5 w-5 text-trust-600" />
+                          </div>
+                          <div>
+                            <h4 className="font-medium text-admin-900">
+                              {order.vehicle_year} {order.vehicle_make} {order.vehicle_model}
+                            </h4>
+                            <p className="text-sm text-admin-600 font-mono">VIN: {order.vin_number}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+
+                {/* Notes */}
+                {order.notes && (
+                  <Card variant="admin">
+                    <div className="p-6">
+                      <h3 className="text-lg font-semibold text-admin-900 mb-4">Special Instructions</h3>
+                      <div className="bg-admin-50 rounded-lg p-4">
+                        <p className="text-admin-700">{order.notes}</p>
+                      </div>
+                    </div>
+                  </Card>
+                )}
               </div>
             )}
 
-            {/* Document Attachments */}
-            <div className="bg-white shadow rounded-lg p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <PaperClipIcon className="h-5 w-5 mr-2 text-blue-600" />
-                Document Attachments
-                <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                  {attachments.length}
-                </span>
-              </h2>
-              
-              {attachments.length === 0 ? (
-                <div className="text-center py-6">
-                  <PaperClipIcon className="mx-auto h-8 w-8 text-gray-400" />
-                  <p className="mt-2 text-sm text-gray-500">No documents attached to this order</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {attachments.map((attachment) => (
-                    <div 
-                      key={attachment.id}
-                      className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50"
-                    >
-                      <div className="flex items-center space-x-3">
-                        <div className="flex-shrink-0">
-                          <PaperClipIcon className="h-5 w-5 text-gray-400" />
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-gray-900">
-                            {attachment.file_name}
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            {formatFileSize(attachment.file_size)} • Uploaded {formatDate(attachment.created_at)}
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => viewAttachment(attachment)}
-                        className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                      >
-                        <DocumentTextIcon className="h-3 w-3 mr-1" />
-                        View
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Quotes Management */}
-            <div className="bg-white shadow rounded-lg p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-900 flex items-center">
-                  <svg className="h-5 w-5 mr-2 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                  </svg>
-                  Quotes
-                  <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                    {quotes.length}
-                  </span>
-                </h2>
-                {!showQuoteForm && (
-                  <button
-                    onClick={() => setShowQuoteForm(true)}
-                    className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-                  >
-                    <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                    Create Quote
-                  </button>
-                )}
-              </div>
-
-              {/* Quote Creation Form */}
-              {showQuoteForm && (
-                <div className="mb-6 p-4 border border-gray-200 rounded-lg bg-gray-50">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">Create New Quote</h3>
-                  <QuoteForm 
-                    onSubmit={createQuote}
-                    onCancel={() => setShowQuoteForm(false)}
-                    submitting={submittingQuote}
-                  />
-                </div>
-              )}
-
-              {/* Existing Quotes */}
-              {quotes.length === 0 ? (
-                <div className="text-center py-6">
-                  <svg className="mx-auto h-8 w-8 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                  </svg>
-                  <p className="mt-2 text-sm text-gray-500">No quotes created for this order yet</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {quotes.map((quote, index) => (
-                    <div key={quote.id} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                      <div className="flex items-center justify-between mb-3">
-                        <h4 className="text-sm font-medium text-gray-900">
-                          Quote #{index + 1}
-                        </h4>
-                        <div className="flex items-center space-x-2">
-                          {quote.is_active ? (
-                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                              Active
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                              Inactive
-                            </span>
-                          )}
-                          <span className="text-xs text-gray-500">
-                            {formatDate(quote.created_at)}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4 mb-3">
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500">Base Price</dt>
-                          <dd className="text-sm font-mono text-gray-900">${quote.base_price.toFixed(2)}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500">Fuel Surcharge</dt>
-                          <dd className="text-sm font-mono text-gray-900">${quote.fuel_surcharge.toFixed(2)}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500">Additional Fees</dt>
-                          <dd className="text-sm font-mono text-gray-900">${quote.additional_fees.toFixed(2)}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-medium text-gray-500">Total Amount</dt>
-                          <dd className="text-lg font-bold text-green-600">${quote.total_amount.toFixed(2)}</dd>
-                        </div>
-                      </div>
-
-                      {(quote.estimated_pickup_date || quote.estimated_delivery_date) && (
-                        <div className="grid grid-cols-2 gap-4 mb-3">
-                          {quote.estimated_pickup_date && (
+            {activeTab === 'vehicles' && (
+              <Card variant="admin">
+                <div className="p-6">
+                  <h3 className="text-lg font-semibold text-admin-900 mb-6">Vehicle Details</h3>
+                  
+                  {vehicles.length > 0 ? (
+                    <div className="space-y-6">
+                      {vehicles.map((vehicle, index) => (
+                        <div key={vehicle.id} className="border border-admin-200 rounded-lg p-6">
+                          <div className="flex items-start justify-between mb-4">
+                            <div className="flex items-start space-x-4">
+                              <div className="w-12 h-12 bg-trust-100 rounded-lg flex items-center justify-center">
+                                <TruckIcon className="h-6 w-6 text-trust-600" />
+                              </div>
+                              <div>
+                                <h4 className="text-xl font-semibold text-admin-900">
+                                  {vehicle.vehicle_year} {vehicle.vehicle_make} {vehicle.vehicle_model}
+                                </h4>
+                                <p className="text-admin-600 mt-1">Vehicle #{index + 1}</p>
+                              </div>
+                            </div>
+                            <Badge variant="admin" size="sm">
+                              {vehicle.vehicle_type || 'Unknown Type'}
+                            </Badge>
+                          </div>
+                          
+                          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                             <div>
-                              <dt className="text-xs font-medium text-gray-500">Est. Pickup Date</dt>
-                              <dd className="text-sm text-gray-900">{new Date(quote.estimated_pickup_date).toLocaleDateString()}</dd>
+                              <h5 className="text-sm font-medium text-admin-900 mb-2">Vehicle Identification</h5>
+                              <div className="space-y-2">
+                                <div>
+                                  <p className="text-xs text-admin-600 uppercase tracking-wide">VIN Number</p>
+                                  <p className="font-mono text-sm text-admin-900 bg-admin-50 px-2 py-1 rounded">{vehicle.vin_number}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-admin-600 uppercase tracking-wide">Make & Model</p>
+                                  <p className="text-sm text-admin-900">{vehicle.vehicle_make} {vehicle.vehicle_model}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-admin-600 uppercase tracking-wide">Year</p>
+                                  <p className="text-sm text-admin-900">{vehicle.vehicle_year || 'Unknown'}</p>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div>
+                              <h5 className="text-sm font-medium text-admin-900 mb-2">Vehicle Specifications</h5>
+                              <div className="space-y-2">
+                                <div>
+                                  <p className="text-xs text-admin-600 uppercase tracking-wide">Type</p>
+                                  <p className="text-sm text-admin-900">{vehicle.vehicle_type || 'Not specified'}</p>
+                                </div>
+                                {vehicle.vehicle_trim && (
+                                  <div>
+                                    <p className="text-xs text-admin-600 uppercase tracking-wide">Trim</p>
+                                    <p className="text-sm text-admin-900">{vehicle.vehicle_trim}</p>
+                                  </div>
+                                )}
+                                {vehicle.vehicle_engine && (
+                                  <div>
+                                    <p className="text-xs text-admin-600 uppercase tracking-wide">Engine</p>
+                                    <p className="text-sm text-admin-900">{vehicle.vehicle_engine}</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            
+                            <div>
+                              <h5 className="text-sm font-medium text-admin-900 mb-2">Record Information</h5>
+                              <div className="space-y-2">
+                                <div>
+                                  <p className="text-xs text-admin-600 uppercase tracking-wide">Added to Order</p>
+                                  <p className="text-sm text-admin-900">{formatDate(vehicle.created_at || new Date().toISOString())}</p>
+                                </div>
+                                {vehicle.updated_at && vehicle.updated_at !== vehicle.created_at && (
+                                  <div>
+                                    <p className="text-xs text-admin-600 uppercase tracking-wide">Last Updated</p>
+                                    <p className="text-sm text-admin-900">{formatDate(vehicle.updated_at)}</p>
+                                  </div>
+                                )}
+                                {vehicle.nhtsa_data && (
+                                  <div>
+                                    <p className="text-xs text-admin-600 uppercase tracking-wide">NHTSA Data</p>
+                                    <p className="text-sm text-success-600">✓ Available</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          
+                          {vehicle.nhtsa_data && (
+                            <div className="mt-6 pt-4 border-t border-admin-200">
+                              <details className="group">
+                                <summary className="flex items-center justify-between cursor-pointer text-sm font-medium text-admin-900 hover:text-admin-700">
+                                  <span>NHTSA Vehicle Data</span>
+                                  <ChevronRightIcon className="h-4 w-4 transform group-open:rotate-90 transition-transform" />
+                                </summary>
+                                <div className="mt-3 p-3 bg-admin-50 rounded-lg">
+                                  <pre className="text-xs text-admin-700 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                    {JSON.stringify(vehicle.nhtsa_data, null, 2)}
+                                  </pre>
+                                </div>
+                              </details>
                             </div>
                           )}
-                          {quote.estimated_delivery_date && (
-                            <div>
-                              <dt className="text-xs font-medium text-gray-500">Est. Delivery Date</dt>
-                              <dd className="text-sm text-gray-900">{new Date(quote.estimated_delivery_date).toLocaleDateString()}</dd>
-                            </div>
-                          )}
+                          
+                          <div className="flex justify-end mt-4 pt-4 border-t border-admin-200">
+                            <Button variant="admin-secondary" size="sm">
+                              <PencilIcon className="h-4 w-4 mr-2" />
+                              Edit Vehicle
+                            </Button>
+                          </div>
                         </div>
-                      )}
-
-                      {quote.notes && (
-                        <div className="mb-3">
-                          <dt className="text-xs font-medium text-gray-500">Notes</dt>
-                          <dd className="text-sm text-gray-700 mt-1">{quote.notes}</dd>
-                        </div>
-                      )}
-
-                      {quote.expires_at && (
-                        <div className="text-xs text-gray-500">
-                          Expires: {formatDate(quote.expires_at)}
-                        </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Right Column */}
-          <div className="space-y-6">
-            {/* Vehicle Information */}
-            <div className="bg-white shadow rounded-lg p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <TruckIcon className="h-5 w-5 mr-2 text-blue-600" />
-                Vehicle Information
-                <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                  {vehicles.length}
-                </span>
-              </h2>
-              
-              {vehicles.length === 0 ? (
-                <div className="text-center py-6">
-                  <TruckIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <p className="text-gray-500 text-sm">No vehicles found for this order</p>
-                  {order.vin_number && (
-                    <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                      <p className="text-sm text-yellow-800 mb-2">Legacy single VIN data:</p>
-                      <p className="text-sm font-mono text-yellow-900">{order.vin_number}</p>
-                      {order.vehicle_make && <p className="text-sm text-yellow-900">{order.vehicle_year} {order.vehicle_make} {order.vehicle_model}</p>}
+                  ) : (
+                    <div className="border border-admin-200 rounded-lg p-6">
+                      <div className="flex items-start justify-between mb-4">
+                        <div className="flex items-start space-x-4">
+                          <div className="w-12 h-12 bg-trust-100 rounded-lg flex items-center justify-center">
+                            <TruckIcon className="h-6 w-6 text-trust-600" />
+                          </div>
+                          <div>
+                            <h4 className="text-xl font-semibold text-admin-900">
+                              {order.vehicle_year} {order.vehicle_make} {order.vehicle_model}
+                            </h4>
+                            <p className="text-admin-600 mt-1">Primary Vehicle (from original request)</p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <div>
+                          <h5 className="text-sm font-medium text-admin-900 mb-2">Vehicle Identification</h5>
+                          <div className="space-y-2">
+                            <div>
+                              <p className="text-xs text-admin-600 uppercase tracking-wide">VIN Number</p>
+                              <p className="font-mono text-sm text-admin-900 bg-admin-50 px-2 py-1 rounded">{order.vin_number}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-admin-600 uppercase tracking-wide">Make & Model</p>
+                              <p className="text-sm text-admin-900">{order.vehicle_make} {order.vehicle_model}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-admin-600 uppercase tracking-wide">Year</p>
+                              <p className="text-sm text-admin-900">{order.vehicle_year || 'Unknown'}</p>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div>
+                          <h5 className="text-sm font-medium text-admin-900 mb-2">Order Information</h5>
+                          <div className="space-y-2">
+                            <div>
+                              <p className="text-xs text-admin-600 uppercase tracking-wide">Order Created</p>
+                              <p className="text-sm text-admin-900">{formatDate(order.created_at)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-admin-600 uppercase tracking-wide">Last Updated</p>
+                              <p className="text-sm text-admin-900">{formatDate(order.updated_at)}</p>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div>
+                          <h5 className="text-sm font-medium text-admin-900 mb-2">Status</h5>
+                          <div className="space-y-2">
+                            <div>
+                              <p className="text-xs text-admin-600 uppercase tracking-wide">Current Status</p>
+                              <Badge variant={currentStatus.color} size="sm">
+                                {currentStatus.label}
+                              </Badge>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex justify-end mt-4 pt-4 border-t border-admin-200">
+                        <Button variant="admin-secondary" size="sm">
+                          <PencilIcon className="h-4 w-4 mr-2" />
+                          Edit Vehicle Details
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>
-              ) : (
-                <div className="space-y-6">
-                  {vehicles.map((vehicle, index) => (
-                    <div key={vehicle.id} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-sm font-medium text-gray-900 flex items-center">
-                          <TruckIcon className="h-4 w-4 mr-2" />
-                          Vehicle {index + 1}
-                        </h3>
-                        <span className="text-xs text-gray-500">
-                          Added {new Date(vehicle.created_at).toLocaleDateString()}
-                        </span>
+              </Card>
+            )}
+
+            {activeTab === 'quote' && (
+              <Card variant="admin">
+                <div className="p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-lg font-semibold text-admin-900">Pricing & Quote</h3>
+                    <Button 
+                      variant="admin-primary" 
+                      size="sm"
+                      onClick={() => setShowQuoteModal(true)}
+                    >
+                      <CurrencyDollarIcon className="h-4 w-4 mr-2" />
+                      Create Quote
+                    </Button>
+                  </div>
+                  
+                  {quote ? (
+                    <div className="space-y-4">
+                      <div className="bg-admin-50 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-2xl font-bold text-admin-900">
+                              {formatCurrency(quote.total_amount)}
+                            </p>
+                            <p className="text-sm text-admin-600">
+                              Quote created {formatDate(quote.created_at)}
+                            </p>
+                          </div>
+                          <Badge variant={quote.is_active ? 'success' : 'admin'}>
+                            {quote.is_active ? 'Active' : 'Inactive'}
+                          </Badge>
+                        </div>
                       </div>
                       
-                      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="sm:col-span-2">
-                          <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">VIN Number</dt>
-                          <dd className="mt-1 text-sm font-mono text-gray-900 bg-white px-3 py-2 rounded border">
-                            {vehicle.vin_number}
-                          </dd>
+                      {quote.estimated_pickup_date && (
+                        <div className="grid md:grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-sm font-medium text-admin-900">Estimated Pickup</p>
+                            <p className="text-admin-600">{formatDate(quote.estimated_pickup_date)}</p>
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-admin-900">Estimated Delivery</p>
+                            <p className="text-admin-600">{formatDate(quote.estimated_delivery_date || '')}</p>
+                          </div>
                         </div>
-                        
-                        {vehicle.vehicle_make && (
-                          <div>
-                            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Make</dt>
-                            <dd className="mt-1 text-sm text-gray-900">{vehicle.vehicle_make}</dd>
-                          </div>
-                        )}
-                        
-                        {vehicle.vehicle_model && (
-                          <div>
-                            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Model</dt>
-                            <dd className="mt-1 text-sm text-gray-900">{vehicle.vehicle_model}</dd>
-                          </div>
-                        )}
-                        
-                        {vehicle.vehicle_year && (
-                          <div>
-                            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Year</dt>
-                            <dd className="mt-1 text-sm text-gray-900">{vehicle.vehicle_year}</dd>
-                          </div>
-                        )}
-                        
-                        {vehicle.vehicle_type && (
-                          <div>
-                            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Type</dt>
-                            <dd className="mt-1 text-sm text-gray-900">{vehicle.vehicle_type}</dd>
-                          </div>
-                        )}
-                        
-                        {vehicle.vehicle_engine && (
-                          <div className="sm:col-span-2">
-                            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Engine</dt>
-                            <dd className="mt-1 text-sm text-gray-900">{vehicle.vehicle_engine}</dd>
-                          </div>
-                        )}
-                      </dl>
-
+                      )}
                     </div>
-                  ))}
+                  ) : (
+                    <div className="text-center py-8">
+                      <CurrencyDollarIcon className="mx-auto h-12 w-12 text-admin-300 mb-4" />
+                      <p className="text-admin-600">No quote created yet</p>
+                      <Button 
+                        variant="admin-primary" 
+                        className="mt-4"
+                        onClick={() => setShowQuoteModal(true)}
+                      >
+                        Create First Quote
+                      </Button>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
+              </Card>
+            )}
 
-        {/* Pickup and Delivery Locations - Horizontal Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
-          {/* Pickup Location */}
-          <div className="bg-white shadow rounded-lg p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <MapPinIcon className="h-5 w-5 mr-2 text-green-600" />
-              Pickup Location
-            </h2>
-            <div className="space-y-4">
-              <div>
-                <dt className="text-sm font-medium text-gray-500">Company</dt>
-                <dd className="mt-1 text-lg font-semibold text-gray-900">{order.pickup_company_name}</dd>
-              </div>
-              <div>
-                <dt className="text-sm font-medium text-gray-500">Address</dt>
-                <dd className="mt-1 text-sm text-gray-700 leading-relaxed">{order.pickup_company_address}</dd>
-              </div>
-              <div className="border-t pt-4">
-                <h3 className="text-sm font-medium text-gray-500 mb-3">Contact Information</h3>
-                <div className="space-y-2">
-                  <div className="flex items-center">
-                    <UserIcon className="h-4 w-4 mr-2 text-gray-400" />
-                    <span className="text-sm text-gray-900">{order.pickup_contact_name}</span>
+            {activeTab === 'documents' && (
+              <Card variant="admin">
+                <div className="p-6">
+                  <h3 className="text-lg font-semibold text-admin-900 mb-6">Documents & Attachments</h3>
+                  
+                  {documents.length > 0 ? (
+                    <div className="space-y-3">
+                      {documents.map((doc) => (
+                        <div key={doc.id} className="flex items-center justify-between p-3 border border-admin-200 rounded-lg">
+                          <div className="flex items-center space-x-3">
+                            <DocumentTextIcon className="h-8 w-8 text-admin-400" />
+                            <div>
+                              <p className="font-medium text-admin-900">{doc.file_name}</p>
+                              <p className="text-sm text-admin-600">
+                                {(doc.file_size / 1024 / 1024).toFixed(2)} MB • 
+                                Uploaded {formatDate(doc.created_at)}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <Button 
+                              variant="admin-secondary" 
+                              size="sm"
+                              onClick={() => handleViewDocument(doc)}
+                            >
+                              <EyeIcon className="h-4 w-4 mr-1" />
+                              View
+                            </Button>
+                            <Button 
+                              variant="admin-secondary" 
+                              size="sm"
+                              onClick={() => handleDownloadDocument(doc)}
+                            >
+                              <ArrowDownTrayIcon className="h-4 w-4 mr-1" />
+                              Download
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <DocumentTextIcon className="mx-auto h-12 w-12 text-admin-300 mb-4" />
+                      <p className="text-admin-600">No documents uploaded yet</p>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            )}
+
+            {activeTab === 'activity' && (
+              <Card variant="admin">
+                <div className="p-6">
+                  <h3 className="text-lg font-semibold text-admin-900 mb-6">Activity Timeline</h3>
+                  <div className="space-y-4">
+                    <div className="flex items-start space-x-3">
+                      <div className="w-8 h-8 bg-success-100 rounded-full flex items-center justify-center">
+                        <CheckCircleIcon className="h-4 w-4 text-success-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-admin-900">Order created</p>
+                        <p className="text-sm text-admin-600">{formatDate(order.created_at)}</p>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex items-center">
-                    <PhoneIcon className="h-4 w-4 mr-2 text-gray-400" />
-                    <a 
-                      href={`tel:${order.pickup_contact_phone}`}
-                      className="text-sm text-blue-600 hover:text-blue-800 underline"
-                    >
+                </div>
+              </Card>
+            )}
+          </div>
+
+          {/* Sidebar */}
+          <div className="space-y-6">
+            {/* Order Status Card */}
+            <Card variant="admin">
+              <div className="p-6">
+                <h3 className="text-lg font-semibold text-admin-900 mb-4">Order Status</h3>
+                <div className="text-center">
+                  <div className={`w-16 h-16 mx-auto mb-4 rounded-full ${currentStatus.color === 'warning' ? 'bg-warning-100' : 
+                    currentStatus.color === 'quoted' ? 'bg-trust-100' :
+                    currentStatus.color === 'accepted' ? 'bg-primary-100' :
+                    currentStatus.color === 'admin' ? 'bg-admin-100' :
+                    currentStatus.color === 'completed' ? 'bg-success-100' :
+                    currentStatus.color === 'cancelled' ? 'bg-red-100' : 'bg-admin-100'} flex items-center justify-center`}>
+                    <StatusIcon className={`h-8 w-8 ${currentStatus.color === 'warning' ? 'text-warning-600' :
+                    currentStatus.color === 'quoted' ? 'text-trust-600' :
+                    currentStatus.color === 'accepted' ? 'text-primary-600' :
+                    currentStatus.color === 'admin' ? 'text-admin-600' :
+                    currentStatus.color === 'completed' ? 'text-success-600' :
+                    currentStatus.color === 'cancelled' ? 'text-red-600' : 'text-admin-600'}`} />
+                  </div>
+                  <h4 className="font-medium text-admin-900 mb-1">{currentStatus.label}</h4>
+                  <p className="text-sm text-admin-600 mb-4">{currentStatus.description}</p>
+                  <Button 
+                    variant="admin-secondary" 
+                    size="sm" 
+                    className="w-full"
+                    onClick={() => setShowStatusModal(true)}
+                  >
+                    Update Status
+                  </Button>
+                </div>
+              </div>
+            </Card>
+
+            {/* Quick Stats */}
+            <Card variant="admin">
+              <div className="p-6">
+                <h3 className="text-lg font-semibold text-admin-900 mb-4">Quick Stats</h3>
+                <div className="space-y-3">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-admin-600">Vehicles</span>
+                    <span className="font-medium text-admin-900">{vehicles.length || 1}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-admin-600">Quote Value</span>
+                    <span className="font-medium text-admin-900">
+                      {quote ? formatCurrency(quote.total_amount) : 'Pending'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-admin-600">Days Active</span>
+                    <span className="font-medium text-admin-900">
+                      {Math.ceil((Date.now() - new Date(order.created_at).getTime()) / (1000 * 60 * 60 * 24))}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* Contact Information */}
+            <Card variant="admin">
+              <div className="p-6">
+                <h3 className="text-lg font-semibold text-admin-900 mb-4">Customer Contact</h3>
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-admin-900">Pickup Contact</p>
+                    <p className="text-sm text-admin-600">{order.pickup_contact_name}</p>
+                    <a href={`tel:${order.pickup_contact_phone}`} className="text-sm text-primary-600 hover:text-primary-700">
                       {order.pickup_contact_phone}
                     </a>
                   </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Delivery Location */}
-          <div className="bg-white shadow rounded-lg p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <MapPinIcon className="h-5 w-5 mr-2 text-red-600" />
-              Delivery Location
-            </h2>
-            <div className="space-y-4">
-              <div>
-                <dt className="text-sm font-medium text-gray-500">Company</dt>
-                <dd className="mt-1 text-lg font-semibold text-gray-900">{order.delivery_company_name}</dd>
-              </div>
-              <div>
-                <dt className="text-sm font-medium text-gray-500">Address</dt>
-                <dd className="mt-1 text-sm text-gray-700 leading-relaxed">{order.delivery_company_address}</dd>
-              </div>
-              <div className="border-t pt-4">
-                <h3 className="text-sm font-medium text-gray-500 mb-3">Contact Information</h3>
-                <div className="space-y-2">
-                  <div className="flex items-center">
-                    <UserIcon className="h-4 w-4 mr-2 text-gray-400" />
-                    <span className="text-sm text-gray-900">{order.delivery_contact_name}</span>
-                  </div>
-                  <div className="flex items-center">
-                    <PhoneIcon className="h-4 w-4 mr-2 text-gray-400" />
-                    <a 
-                      href={`tel:${order.delivery_contact_phone}`}
-                      className="text-sm text-blue-600 hover:text-blue-800 underline"
-                    >
+                  <div className="pt-3 border-t border-admin-200">
+                    <p className="text-sm font-medium text-admin-900">Delivery Contact</p>
+                    <p className="text-sm text-admin-600">{order.delivery_contact_name}</p>
+                    <a href={`tel:${order.delivery_contact_phone}`} className="text-sm text-primary-600 hover:text-primary-700">
                       {order.delivery_contact_phone}
                     </a>
                   </div>
                 </div>
+                <Button variant="admin-secondary" size="sm" className="w-full mt-4">
+                  <ChatBubbleLeftEllipsisIcon className="h-4 w-4 mr-2" />
+                  Send Message
+                </Button>
               </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="mt-8 bg-white shadow rounded-lg p-6">
-          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center space-y-4 sm:space-y-0">
-            <Link
-              href="/admin/orders/all"
-              className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-            >
-              <ArrowLeftIcon className="h-4 w-4 mr-2" />
-              Back to All Orders
-            </Link>
-            
-            <div className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-4">
-              {/* Order Assignment Actions */}
-              {!order.assigned_admin_id ? (
-                // Unassigned order - show claim button
-                <button
-                  onClick={handleClaimOrder}
-                  disabled={claiming}
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <UserPlusIcon className="h-4 w-4 mr-2" />
-                  {claiming ? 'Claiming...' : 'Claim Order'}
-                </button>
-              ) : (
-                // Assigned order - show reassignment options
-                <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
-                  <select
-                    value={selectedAdminId}
-                    onChange={(e) => setSelectedAdminId(e.target.value)}
-                    className="block w-full sm:w-48 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    <option value="">Select admin...</option>
-                    {adminUsers
-                      .filter(admin => admin.id !== order.assigned_admin_id)
-                      .map(admin => (
-                        <option key={admin.id} value={admin.id}>
-                          {admin.email}
-                        </option>
-                      ))}
-                  </select>
-                  <button
-                    onClick={handleReassignOrder}
-                    disabled={!selectedAdminId || reassigning}
-                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <UserCircleIcon className="h-4 w-4 mr-2" />
-                    {reassigning ? 'Reassigning...' : 'Reassign Order'}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-          
-          {/* Assignment Status Info */}
-          <div className="mt-4 pt-4 border-t border-gray-200">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600">
-                Assignment Status:
-              </span>
-              <span className={`font-medium ${order.assigned_admin_id ? 'text-green-600' : 'text-orange-600'}`}>
-                {order.assigned_admin_id ? (
-                  <>Assigned to {assignedAdminName}</>
-                ) : (
-                  'Unassigned - Available for claim'
-                )}
-              </span>
-            </div>
+            </Card>
           </div>
         </div>
       </div>
-
-      {/* Attachment Viewer Modal */}
-      {viewingAttachment && attachmentUrl && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
-            {/* Background overlay */}
-            <div 
-              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-              onClick={closeAttachmentModal}
-            ></div>
-
-            {/* Modal panel */}
-            <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
-              {/* Modal header */}
-              <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center">
-                    <DocumentTextIcon className="h-6 w-6 text-blue-600 mr-3" />
-                    <div>
-                      <h3 className="text-lg leading-6 font-medium text-gray-900">
-                        {viewingAttachment.file_name}
-                      </h3>
-                      <p className="text-sm text-gray-500">
-                        {formatFileSize(viewingAttachment.file_size)} • {formatDate(viewingAttachment.created_at)}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={closeAttachmentModal}
-                    className="bg-white rounded-md text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <span className="sr-only">Close</span>
-                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              {/* Modal content */}
-              <div className="bg-gray-50 px-4 py-3 sm:px-6">
-                <div className="w-full h-96 sm:h-[600px] bg-white rounded border">
-                  {viewingAttachment.file_type === 'application/pdf' ? (
-                    // PDF viewer
-                    <iframe
-                      src={attachmentUrl}
-                      className="w-full h-full rounded"
-                      title={viewingAttachment.file_name}
-                    />
-                  ) : viewingAttachment.file_type.startsWith('image/') ? (
-                    // Image viewer
-                    <img
-                      src={attachmentUrl}
-                      alt={viewingAttachment.file_name}
-                      className="w-full h-full object-contain rounded"
-                    />
-                  ) : (
-                    // Generic file viewer
-                    <div className="flex items-center justify-center h-full">
-                      <div className="text-center">
-                        <DocumentTextIcon className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                        <p className="text-gray-600 mb-4">Preview not available for this file type</p>
-                        <a
-                          href={attachmentUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-                        >
-                          <ArrowDownTrayIcon className="h-4 w-4 mr-2" />
-                          Download File
-                        </a>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Modal footer */}
-              <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-                <a
-                  href={attachmentUrl}
-                  download={viewingAttachment.file_name}
-                  className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm"
-                >
-                  <ArrowDownTrayIcon className="h-4 w-4 mr-2" />
-                  Download
-                </a>
-                <button
-                  type="button"
-                  onClick={closeAttachmentModal}
-                  className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
+    </div>
+    {/* Assign Admin Modal */}
+    {showAssignModal && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 w-full max-w-md">
+          <h3 className="text-lg font-semibold text-admin-900 mb-4">Assign Admin</h3>
+          <div className="space-y-3 max-h-60 overflow-y-auto">
+            {availableAdmins.map((admin) => (
+              <button
+                key={admin.id}
+                onClick={() => assignAdmin(admin.id)}
+                disabled={updating}
+                className="w-full text-left p-3 border border-admin-200 rounded-lg hover:bg-admin-50 transition-colors disabled:opacity-50"
+              >
+                <p className="font-medium text-admin-900">{admin.full_name || admin.email}</p>
+                <p className="text-sm text-admin-600">{admin.email}</p>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-end space-x-3 mt-6">
+            <Button variant="admin-secondary" onClick={() => setShowAssignModal(false)}>
+              Cancel
+            </Button>
           </div>
         </div>
-      )}
-    </div>
+      </div>
+    )}
+
+    {/* Create Quote Modal */}
+    {showQuoteModal && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 w-full max-w-lg">
+          <h3 className="text-lg font-semibold text-admin-900 mb-4">Create Quote</h3>
+          <form onSubmit={(e) => {
+            e.preventDefault()
+            console.log('🔍 Quote form submitted')
+            
+            try {
+              const formData = new FormData(e.target as HTMLFormElement)
+              const amountString = formData.get('amount') as string
+              const pickupDate = formData.get('pickup_date') as string
+              const deliveryDate = formData.get('delivery_date') as string
+              
+              console.log('🔍 Form values:', { 
+                amountString, 
+                pickupDate, 
+                deliveryDate 
+              })
+              
+              const amount = parseFloat(amountString)
+              
+              if (!amountString || isNaN(amount) || amount <= 0) {
+                toast.error('Please enter a valid quote amount')
+                return
+              }
+              
+              createQuote({
+                total_amount: amount,
+                estimated_pickup_date: pickupDate || undefined,
+                estimated_delivery_date: deliveryDate || undefined
+              })
+            } catch (error) {
+              console.error('❌ Form submission error:', error)
+              toast.error('Error processing form data')
+            }
+          }}>
+            <div className="space-y-4">
+              <div>
+                <label className="label-admin">Quote Amount *</label>
+                <input
+                  type="number"
+                  name="amount"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  className="input-admin"
+                  placeholder="Enter quote amount (e.g., 1500.00)"
+                />
+              </div>
+              <div>
+                <label className="label-admin">Estimated Pickup Date</label>
+                <input
+                  type="datetime-local"
+                  name="pickup_date"
+                  className="input-admin"
+                />
+              </div>
+              <div>
+                <label className="label-admin">Estimated Delivery Date</label>
+                <input
+                  type="datetime-local"
+                  name="delivery_date"
+                  className="input-admin"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end space-x-3 mt-6">
+              <Button 
+                type="button" 
+                variant="admin-secondary" 
+                onClick={() => setShowQuoteModal(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" variant="admin-primary" loading={updating}>
+                Create Quote
+              </Button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
+
+    {/* Update Status Modal */}
+    {showStatusModal && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 w-full max-w-md">
+          <h3 className="text-lg font-semibold text-admin-900 mb-4">Update Order Status</h3>
+          <div className="space-y-3">
+            {Object.entries(statusConfig).map(([status, config]) => (
+              <button
+                key={status}
+                onClick={() => {
+                  updateOrderStatus(status)
+                  setShowStatusModal(false)
+                }}
+                disabled={updating || order?.status === status}
+                className={`w-full text-left p-3 border rounded-lg transition-colors disabled:opacity-50 ${
+                  order?.status === status 
+                    ? 'border-admin-300 bg-admin-50' 
+                    : 'border-admin-200 hover:bg-admin-50'
+                }`}
+              >
+                <div className="flex items-center space-x-3">
+                  <config.icon className={`h-5 w-5 ${config.color === 'warning' ? 'text-warning-600' :
+                  config.color === 'quoted' ? 'text-trust-600' :
+                  config.color === 'accepted' ? 'text-primary-600' :
+                  config.color === 'admin' ? 'text-admin-600' :
+                  config.color === 'completed' ? 'text-success-600' :
+                  config.color === 'cancelled' ? 'text-red-600' : 'text-admin-600'}`} />
+                  <div>
+                    <p className="font-medium text-admin-900">{config.label}</p>
+                    <p className="text-sm text-admin-600">{config.description}</p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-end space-x-3 mt-6">
+            <Button variant="admin-secondary" onClick={() => setShowStatusModal(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
-} 
+}

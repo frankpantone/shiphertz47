@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { toast } from 'react-hot-toast'
@@ -11,11 +11,17 @@ import {
   TruckIcon,
   MapPinIcon,
   PhoneIcon,
-  EyeIcon
+  EyeIcon,
+  AdjustmentsHorizontalIcon,
+  DocumentTextIcon,
+  CheckCircleIcon
 } from '@heroicons/react/24/outline'
 import { useRawAuth } from '@/hooks/useRawAuth'
 import { getRawRequests, getRawProfile } from '@/lib/auth-raw'
 import { supabase } from '@/lib/supabase'
+import { Card, Button, Badge, Input } from '@/components/ui'
+import AdvancedFilters, { AdvancedFilters as FilterState } from '@/components/admin/AdvancedFilters'
+import DataExport, { ExportData } from '@/components/admin/DataExport'
 
 interface TransportationRequest {
   id: string
@@ -62,11 +68,18 @@ export default function AllOrdersPage() {
   const [requestsLoading, setRequestsLoading] = useState(true)
   const [adminProfiles, setAdminProfiles] = useState<Record<string, AdminProfile>>({})
   const [vehiclesByRequest, setVehiclesByRequest] = useState<Record<string, Vehicle[]>>({})
+  const [showExportModal, setShowExportModal] = useState(false)
   
-  // Filters
-  const [searchTerm, setSearchTerm] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
-  const [assignmentFilter, setAssignmentFilter] = useState('')
+  // Advanced Filters
+  const [filters, setFilters] = useState<FilterState>({
+    search: '',
+    status: [],
+    dateRange: null,
+    assignment: '',
+    customFilters: {},
+    sortBy: 'created_at',
+    sortOrder: 'desc'
+  })
 
   useEffect(() => {
     console.log('🔍 All Orders - Admin access check:', adminAccess)
@@ -87,7 +100,7 @@ export default function AllOrdersPage() {
       console.log('✅ Admin access granted, loading all requests')
       fetchAllRequests()
     }
-  }, [adminAccess, redirectToLogin, redirectToDashboard]) // Simplified dependencies
+  }, [adminAccess, redirectToLogin, redirectToDashboard])
 
   const fetchAllRequests = async () => {
     try {
@@ -143,7 +156,7 @@ export default function AllOrdersPage() {
 
       // Group vehicles by request ID
       const vehiclesByRequestId: Record<string, Vehicle[]> = {}
-      vehicleData?.forEach(vehicle => {
+      vehicleData?.forEach((vehicle: Vehicle) => {
         if (!vehiclesByRequestId[vehicle.transportation_request_id]) {
           vehiclesByRequestId[vehicle.transportation_request_id] = []
         }
@@ -158,45 +171,144 @@ export default function AllOrdersPage() {
     }
   }
 
-  const filteredRequests = requests.filter(request => {
-    // Search filter
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase()
+  // Advanced filtering and sorting logic
+  const filteredAndSortedRequests = useMemo(() => {
+    let filtered = requests.filter(request => {
+      // Search filter
+      if (filters.search) {
+        const term = filters.search.toLowerCase()
+        
+        // Check if any vehicle VIN matches the search term
+        const requestVehicles = vehiclesByRequest[request.id] || []
+        const vehicleMatches = requestVehicles.some(vehicle => 
+          vehicle.vin_number.toLowerCase().includes(term) ||
+          vehicle.vehicle_make?.toLowerCase().includes(term) ||
+          vehicle.vehicle_model?.toLowerCase().includes(term)
+        )
+        
+        if (
+          !request.order_number.toLowerCase().includes(term) &&
+          !request.pickup_company_name.toLowerCase().includes(term) &&
+          !request.delivery_company_name.toLowerCase().includes(term) &&
+          !request.vin_number.toLowerCase().includes(term) &&
+          !vehicleMatches
+        ) {
+          return false
+        }
+      }
       
-      // Check if any vehicle VIN matches the search term
-      const requestVehicles = vehiclesByRequest[request.id] || []
-      const vehicleMatches = requestVehicles.some(vehicle => 
-        vehicle.vin_number.toLowerCase().includes(term) ||
-        vehicle.vehicle_make?.toLowerCase().includes(term) ||
-        vehicle.vehicle_model?.toLowerCase().includes(term)
-      )
-      
-      if (
-        !request.order_number.toLowerCase().includes(term) &&
-        !request.pickup_company_name.toLowerCase().includes(term) &&
-        !request.delivery_company_name.toLowerCase().includes(term) &&
-        !request.vin_number.toLowerCase().includes(term) && // Keep legacy VIN search
-        !vehicleMatches
-      ) {
+      // Status filter
+      if (filters.status.length > 0 && !filters.status.includes(request.status)) {
         return false
       }
-    }
+      
+      // Assignment filter
+      if (filters.assignment === 'assigned' && !request.assigned_admin_id) {
+        return false
+      }
+      if (filters.assignment === 'unassigned' && request.assigned_admin_id) {
+        return false
+      }
+      
+      // Date range filter
+      if (filters.dateRange) {
+        const requestDate = new Date(request.created_at)
+        if (filters.dateRange.start) {
+          const startDate = new Date(filters.dateRange.start)
+          if (requestDate < startDate) return false
+        }
+        if (filters.dateRange.end) {
+          const endDate = new Date(filters.dateRange.end)
+          endDate.setHours(23, 59, 59, 999) // Include full end date
+          if (requestDate > endDate) return false
+        }
+      }
+      
+      return true
+    })
     
-    // Status filter
-    if (statusFilter && request.status !== statusFilter) {
-      return false
-    }
+    // Sort the filtered results
+    filtered.sort((a, b) => {
+      let aValue: any = a[filters.sortBy as keyof TransportationRequest]
+      let bValue: any = b[filters.sortBy as keyof TransportationRequest]
+      
+      // Handle date sorting
+      if (filters.sortBy.includes('_at')) {
+        aValue = new Date(aValue).getTime()
+        bValue = new Date(bValue).getTime()
+      }
+      
+      // Handle string sorting
+      if (typeof aValue === 'string') {
+        aValue = aValue.toLowerCase()
+        bValue = bValue?.toLowerCase() || ''
+      }
+      
+      if (aValue < bValue) return filters.sortOrder === 'asc' ? -1 : 1
+      if (aValue > bValue) return filters.sortOrder === 'asc' ? 1 : -1
+      return 0
+    })
     
-    // Assignment filter
-    if (assignmentFilter === 'assigned' && !request.assigned_admin_id) {
-      return false
-    }
-    if (assignmentFilter === 'unassigned' && request.assigned_admin_id) {
-      return false
-    }
+    return filtered
+  }, [requests, vehiclesByRequest, filters])
+
+  // Generate status options with counts
+  const statusOptions = useMemo(() => {
+    const statusCounts: Record<string, number> = {}
+    requests.forEach(request => {
+      statusCounts[request.status] = (statusCounts[request.status] || 0) + 1
+    })
     
-    return true
-  })
+    return [
+      { value: 'pending', label: 'Pending', count: statusCounts.pending || 0 },
+      { value: 'quoted', label: 'Quoted', count: statusCounts.quoted || 0 },
+      { value: 'accepted', label: 'Accepted', count: statusCounts.accepted || 0 },
+      { value: 'in_progress', label: 'In Progress', count: statusCounts.in_progress || 0 },
+      { value: 'completed', label: 'Completed', count: statusCounts.completed || 0 },
+      { value: 'cancelled', label: 'Cancelled', count: statusCounts.cancelled || 0 }
+    ]
+  }, [requests])
+
+  // Generate assignment options with counts
+  const assignmentOptions = useMemo(() => {
+    const assignedCount = requests.filter(r => r.assigned_admin_id).length
+    const unassignedCount = requests.filter(r => !r.assigned_admin_id).length
+    
+    return [
+      { value: 'assigned', label: 'Assigned', count: assignedCount },
+      { value: 'unassigned', label: 'Unassigned', count: unassignedCount }
+    ]
+  }, [requests])
+
+  const getAdminName = useCallback((adminId: string) => {
+    const admin = adminProfiles[adminId]
+    return admin?.full_name || admin?.email || 'Unknown Admin'
+  }, [adminProfiles])
+
+  // Prepare export data
+  const exportData: ExportData[] = useMemo(() => {
+    return filteredAndSortedRequests.map(request => ({
+      id: request.id,
+      order_number: request.order_number,
+      status: request.status,
+      pickup_company_name: request.pickup_company_name,
+      pickup_company_address: request.pickup_company_address,
+      pickup_contact_name: request.pickup_contact_name,
+      pickup_contact_phone: request.pickup_contact_phone,
+      delivery_company_name: request.delivery_company_name,
+      delivery_company_address: request.delivery_company_address,
+      delivery_contact_name: request.delivery_contact_name,
+      delivery_contact_phone: request.delivery_contact_phone,
+      vin_number: request.vin_number,
+      vehicle_make: request.vehicle_make,
+      vehicle_model: request.vehicle_model,
+      vehicle_year: request.vehicle_year,
+      assigned_admin_id: request.assigned_admin_id,
+      assigned_admin_name: request.assigned_admin_id ? getAdminName(request.assigned_admin_id) : undefined,
+      created_at: request.created_at,
+      notes: request.notes
+    }))
+  }, [filteredAndSortedRequests, adminProfiles, getAdminName])
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -208,31 +320,9 @@ export default function AllOrdersPage() {
     })
   }
 
-  const getStatusBadge = (status: string) => {
-    const colors: Record<string, string> = {
-      pending: 'bg-yellow-100 text-yellow-800',
-      quoted: 'bg-blue-100 text-blue-800',
-      accepted: 'bg-green-100 text-green-800',
-      in_progress: 'bg-purple-100 text-purple-800',
-      completed: 'bg-gray-100 text-gray-800',
-      cancelled: 'bg-red-100 text-red-800'
-    }
-    
-    return (
-      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-gray-100 text-gray-800'}`}>
-        {status.replace('_', ' ').toUpperCase()}
-      </span>
-    )
-  }
-
   const handleViewOrder = (order: TransportationRequest) => {
     console.log('🔍 Navigating to order details:', order.order_number)
     router.push(`/admin/orders/${order.id}`)
-  }
-
-  const getAdminName = (adminId: string) => {
-    const admin = adminProfiles[adminId]
-    return admin?.full_name || admin?.email || 'Unknown Admin'
   }
 
   // Show loading while checking authentication
@@ -255,252 +345,255 @@ export default function AllOrdersPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="w-full mx-auto py-6 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="px-4 py-6 sm:px-0">
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-admin-900">All Orders</h1>
+          <p className="text-admin-600 mt-1">Manage and track all transportation requests</p>
+        </div>
+        <div className="flex items-center space-x-3">
+          <Button 
+            variant="admin-secondary" 
+            size="sm"
+            onClick={() => setShowExportModal(true)}
+          >
+            <DocumentTextIcon className="h-4 w-4" />
+            Export Data
+          </Button>
+        </div>
+      </div>
+
+      {/* Statistics Cards */}
+      <div className="grid lg:grid-cols-4 md:grid-cols-2 gap-4">
+        <Card variant="admin" className="p-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <Link
-                href="/admin"
-                className="flex items-center text-sm text-gray-500 hover:text-gray-700"
-              >
-                <ArrowLeftIcon className="h-4 w-4 mr-1" />
-                Back to Dashboard
-              </Link>
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">All Orders</h1>
-                <p className="text-gray-600">View complete order history and details</p>
-              </div>
+            <div>
+              <p className="text-sm text-admin-600">Total Orders</p>
+              <p className="text-2xl font-bold text-admin-900">{requests.length}</p>
+            </div>
+            <div className="h-8 w-8 bg-admin-100 rounded-lg flex items-center justify-center">
+              <TruckIcon className="h-4 w-4 text-admin-600" />
             </div>
           </div>
-        </div>
-
-        {/* Filters */}
-        <div className="bg-white shadow rounded-lg mb-6">
-          <div className="px-6 py-4">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              {/* Search */}
-              <div className="relative">
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search orders..."
-                  className="input-field pl-10"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-              </div>
-
-              {/* Status Filter */}
-              <select
-                className="input-field"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-              >
-                <option value="">All Statuses</option>
-                <option value="pending">Pending</option>
-                <option value="quoted">Quoted</option>
-                <option value="accepted">Accepted</option>
-                <option value="in_progress">In Progress</option>
-                <option value="completed">Completed</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
-
-              {/* Assignment Filter */}
-              <select
-                className="input-field"
-                value={assignmentFilter}
-                onChange={(e) => setAssignmentFilter(e.target.value)}
-              >
-                <option value="">All Assignments</option>
-                <option value="assigned">Assigned</option>
-                <option value="unassigned">Unassigned</option>
-              </select>
-
-              {/* Results Count */}
-              <div className="flex items-center text-sm text-gray-500">
-                <FunnelIcon className="h-4 w-4 mr-2" />
-                {filteredRequests.length} of {requests.length} orders
-              </div>
+        </Card>
+        
+        <Card variant="admin" className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-admin-600">Pending Orders</p>
+              <p className="text-2xl font-bold text-warning-600">{requests.filter(r => r.status === 'pending').length}</p>
+            </div>
+            <div className="h-8 w-8 bg-warning-100 rounded-lg flex items-center justify-center">
+              <DocumentTextIcon className="h-4 w-4 text-warning-600" />
             </div>
           </div>
-        </div>
-
-                {/* Table Instructions */}
-        <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <p className="text-sm text-blue-800">
-            <strong>📋 Orders Management:</strong> Use the table below to view all transportation requests. You can search, filter, and click "View" to see detailed order information.
-          </p>
-          <div className="mt-2 text-xs text-blue-600">
-            <strong>Debug:</strong> Table width set to 1400px with 8 explicit columns. Orders loaded: {filteredRequests.length}.
-            {filteredRequests.length > 0 && (
-              <span className="ml-2 font-mono">
-                {filteredRequests[0].order_number}
-              </span>
-            )}
+        </Card>
+        
+        <Card variant="admin" className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-admin-600">Completed Orders</p>
+              <p className="text-2xl font-bold text-success-600">{requests.filter(r => r.status === 'completed').length}</p>
+            </div>
+            <div className="h-8 w-8 bg-success-100 rounded-lg flex items-center justify-center">
+              <CheckCircleIcon className="h-4 w-4 text-success-600" />
+            </div>
           </div>
-        </div>
+        </Card>
+        
+        <Card variant="admin" className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-admin-600">Unassigned</p>
+              <p className="text-2xl font-bold text-red-600">{requests.filter(r => !r.assigned_admin_id).length}</p>
+            </div>
+            <div className="h-8 w-8 bg-red-100 rounded-lg flex items-center justify-center">
+              <FunnelIcon className="h-4 w-4 text-red-600" />
+            </div>
+          </div>
+        </Card>
       </div>
-      
-      {/* Full Width Table Section */}
-      <div className="w-full px-4 sm:px-6 lg:px-8 pb-8">
-        {/* Orders Table - React/Tailwind Compatible */}
-        <div className="bg-white shadow-lg rounded-lg overflow-hidden">
-          {filteredRequests.length === 0 ? (
-            <div className="text-center py-12">
-              <TruckIcon className="mx-auto h-12 w-12 text-gray-400" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No Orders Found</h3>
-              <p className="text-gray-600">
-                {searchTerm || statusFilter || assignmentFilter
-                  ? 'Try adjusting your search criteria'
-                  : 'No orders have been submitted yet'
-                }
-              </p>
-            </div>
-          ) : (
-            <>
-              {/* Table Container with Horizontal Scroll */}
-              <div className="overflow-x-auto">
-                <div className="min-w-full inline-block align-middle">
-                  <table className="border-collapse" style={{ width: '1400px', minWidth: '1400px' }}>
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200" style={{ width: '140px', minWidth: '140px' }}>
-                          Order #
-                        </th>
-                        <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200" style={{ width: '200px', minWidth: '200px' }}>
-                          Pickup
-                        </th>
-                        <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200" style={{ width: '200px', minWidth: '200px' }}>
-                          Delivery
-                        </th>
-                        <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200" style={{ width: '180px', minWidth: '180px' }}>
-                          Vehicle
-                        </th>
-                        <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200" style={{ width: '100px', minWidth: '100px' }}>
-                          Status
-                        </th>
-                        <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200" style={{ width: '150px', minWidth: '150px' }}>
-                          Assigned To
-                        </th>
-                        <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200" style={{ width: '130px', minWidth: '130px' }}>
-                          Created
-                        </th>
-                        <th className="px-4 py-4 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider border-b-2 border-gray-200 bg-blue-50" style={{ width: '100px', minWidth: '100px' }}>
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {filteredRequests.map((request, index) => (
-                        <tr key={request.id} className={`hover:bg-gray-50 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-25'}`}>
-                          <td className="px-4 py-4 text-sm font-medium text-gray-900">
-                            {request.order_number}
-                          </td>
-                          <td className="px-4 py-4 text-sm">
-                            <div className="font-semibold text-gray-900 mb-1">{request.pickup_company_name}</div>
-                            <div className="text-xs text-gray-500 leading-relaxed">{request.pickup_company_address}</div>
-                          </td>
-                          <td className="px-4 py-4 text-sm">
-                            <div className="font-semibold text-gray-900 mb-1">{request.delivery_company_name}</div>
-                            <div className="text-xs text-gray-500 leading-relaxed">{request.delivery_company_address}</div>
-                          </td>
-                          <td className="px-4 py-4 text-sm">
-                            {(() => {
-                              const requestVehicles = vehiclesByRequest[request.id] || []
-                              
-                              if (requestVehicles.length === 0) {
-                                // Fallback to legacy single VIN data
-                                return (
-                                  <>
-                                    <div className="font-mono font-medium text-gray-900 mb-1">{request.vin_number}</div>
-                                    {(request.vehicle_make || request.vehicle_model || request.vehicle_year) && (
-                                      <div className="text-xs text-gray-500">
-                                        {[request.vehicle_year, request.vehicle_make, request.vehicle_model]
-                                          .filter(Boolean)
-                                          .join(' ')}
-                                      </div>
-                                    )}
-                                  </>
-                                )
-                              }
-                              
-                              if (requestVehicles.length === 1) {
-                                // Single vehicle - show full details
-                                const vehicle = requestVehicles[0]
-                                return (
-                                  <>
-                                    <div className="font-mono font-medium text-gray-900 mb-1">{vehicle.vin_number}</div>
-                                    {(vehicle.vehicle_make || vehicle.vehicle_model || vehicle.vehicle_year) && (
-                                      <div className="text-xs text-gray-500">
-                                        {[vehicle.vehicle_year, vehicle.vehicle_make, vehicle.vehicle_model]
-                                          .filter(Boolean)
-                                          .join(' ')}
-                                      </div>
-                                    )}
-                                  </>
-                                )
-                              }
-                              
-                              // Multiple vehicles - show count and first VIN
-                              const firstVehicle = requestVehicles[0]
-                              return (
-                                <>
-                                  <div className="flex items-center space-x-2 mb-1">
-                                    <TruckIcon className="h-4 w-4 text-blue-600" />
-                                    <span className="font-medium text-gray-900">{requestVehicles.length} vehicles</span>
+
+      {/* Advanced Filters */}
+      <AdvancedFilters
+        filters={filters}
+        onFiltersChange={setFilters}
+        statusOptions={statusOptions}
+        assignmentOptions={assignmentOptions}
+        placeholder="Search orders, VIN, company names, or any field..."
+        resultCount={filteredAndSortedRequests.length}
+        totalCount={requests.length}
+      />
+
+      {/* Orders Table */}
+      <Card variant="admin" className="overflow-hidden">
+        {filteredAndSortedRequests.length === 0 ? (
+          <div className="text-center py-12">
+            <TruckIcon className="mx-auto h-12 w-12 text-admin-400" />
+            <h3 className="text-lg font-medium text-admin-900 mb-2">No Orders Found</h3>
+            <p className="text-admin-600">
+              {filters.search || filters.status.length > 0 || filters.assignment || filters.dateRange
+                ? 'Try adjusting your search criteria'
+                : 'No orders have been submitted yet'
+              }
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-admin-200 bg-admin-50">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-admin-700 uppercase tracking-wider">
+                      Order #
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-admin-700 uppercase tracking-wider">
+                      Route
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-admin-700 uppercase tracking-wider">
+                      Vehicle
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-admin-700 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-admin-700 uppercase tracking-wider">
+                      Assigned To
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-admin-700 uppercase tracking-wider">
+                      Created
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-admin-700 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-admin-100">
+                  {filteredAndSortedRequests.map((request, index) => (
+                    <tr key={request.id} className="hover:bg-admin-50 transition-colors">
+                      <td className="px-4 py-4 text-sm font-medium text-admin-900">
+                        {request.order_number}
+                      </td>
+                      <td className="px-4 py-4 text-sm">
+                        <div className="flex items-start space-x-2">
+                          <MapPinIcon className="h-4 w-4 text-admin-400 mt-0.5 flex-shrink-0" />
+                          <div>
+                            <div className="font-medium text-admin-900">{request.pickup_company_name}</div>
+                            <div className="text-xs text-admin-500">to {request.delivery_company_name}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 text-sm">
+                        {(() => {
+                          const requestVehicles = vehiclesByRequest[request.id] || []
+                          
+                          if (requestVehicles.length === 0) {
+                            return (
+                              <div>
+                                <div className="font-mono text-sm font-medium text-admin-900">{request.vin_number}</div>
+                                {(request.vehicle_make || request.vehicle_model || request.vehicle_year) && (
+                                  <div className="text-xs text-admin-500">
+                                    {[request.vehicle_year, request.vehicle_make, request.vehicle_model]
+                                      .filter(Boolean)
+                                      .join(' ')}
                                   </div>
-                                  <div className="font-mono text-xs text-gray-600 mb-1">{firstVehicle.vin_number}</div>
-                                  {requestVehicles.length > 1 && (
-                                    <div className="text-xs text-gray-500">+{requestVehicles.length - 1} more</div>
-                                  )}
-                                </>
-                              )
-                            })()}
-                          </td>
-                          <td className="px-4 py-4 text-sm">
-                            {getStatusBadge(request.status)}
-                          </td>
-                          <td className="px-4 py-4 text-sm">
-                            <span className={`${request.assigned_admin_id ? 'font-medium text-gray-900' : 'text-gray-500'}`}>
-                              {request.assigned_admin_id ? getAdminName(request.assigned_admin_id) : 'Unassigned'}
-                            </span>
-                          </td>
-                          <td className="px-4 py-4 text-sm font-medium text-gray-900">
-                            {formatDate(request.created_at)}
-                          </td>
-                          <td className="px-4 py-4 text-sm text-center bg-blue-50">
-                            <button 
-                              onClick={() => {
-                                console.log('🔍 View button clicked for order:', request.order_number)
-                                handleViewOrder(request)
-                              }}
-                              className="inline-flex items-center px-3 py-2 border border-transparent text-xs font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors duration-200"
-                            >
-                              <EyeIcon className="h-3 w-3 mr-1" />
-                              View
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                                )}
+                              </div>
+                            )
+                          }
+                          
+                          if (requestVehicles.length === 1) {
+                            const vehicle = requestVehicles[0]
+                            return (
+                              <div>
+                                <div className="font-mono text-sm font-medium text-admin-900">{vehicle.vin_number}</div>
+                                {(vehicle.vehicle_make || vehicle.vehicle_model || vehicle.vehicle_year) && (
+                                  <div className="text-xs text-admin-500">
+                                    {[vehicle.vehicle_year, vehicle.vehicle_make, vehicle.vehicle_model]
+                                      .filter(Boolean)
+                                      .join(' ')}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          }
+                          
+                          const firstVehicle = requestVehicles[0]
+                          return (
+                            <div>
+                              <div className="flex items-center space-x-1 mb-1">
+                                <TruckIcon className="h-3 w-3 text-admin-400" />
+                                <span className="text-sm font-medium text-admin-900">{requestVehicles.length} vehicles</span>
+                              </div>
+                              <div className="font-mono text-xs text-admin-600">{firstVehicle.vin_number}</div>
+                              {requestVehicles.length > 1 && (
+                                <div className="text-xs text-admin-500">+{requestVehicles.length - 1} more</div>
+                              )}
+                            </div>
+                          )
+                        })()}
+                      </td>
+                      <td className="px-4 py-4 text-sm">
+                        <Badge 
+                          variant={request.status === 'pending' ? 'pending' : 
+                                  request.status === 'quoted' ? 'quoted' :
+                                  request.status === 'accepted' ? 'accepted' :
+                                  request.status === 'completed' ? 'completed' :
+                                  request.status === 'cancelled' ? 'cancelled' : 'admin'}
+                          size="sm"
+                        >
+                          {request.status.replace('_', ' ').toUpperCase()}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-4 text-sm">
+                        <span className={request.assigned_admin_id ? 'font-medium text-admin-900' : 'text-admin-500'}>
+                          {request.assigned_admin_id ? getAdminName(request.assigned_admin_id) : 'Unassigned'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-sm text-admin-600">
+                        {formatDate(request.created_at)}
+                      </td>
+                      <td className="px-4 py-4 text-center">
+                        <Button 
+                          variant="admin-secondary"
+                          size="sm"
+                          onClick={() => handleViewOrder(request)}
+                          icon={<EyeIcon className="h-4 w-4" />}
+                        >
+                          View
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Footer */}
+            <div className="bg-admin-50 px-6 py-3 border-t border-admin-200">
+              <div className="flex justify-between items-center text-sm text-admin-600">
+                <span>Showing {filteredAndSortedRequests.length} of {requests.length} orders</span>
+                <div className="flex items-center space-x-4">
+                  <span>Page 1 of 1</span>
+                  <div className="flex space-x-1">
+                    <Button variant="admin-secondary" size="sm" disabled>Previous</Button>
+                    <Button variant="admin-secondary" size="sm" disabled>Next</Button>
+                  </div>
                 </div>
               </div>
-              
-              {/* Professional Footer */}
-              <div className="bg-gray-50 px-6 py-3 border-t border-gray-200">
-                <div className="flex justify-between items-center text-sm text-gray-600">
-                  <span>Showing {filteredRequests.length} of {requests.length} orders</span>
-                  <span className="text-xs">💡 Scroll right to view all columns →</span>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
+            </div>
+          </>
+        )}
+      </Card>
 
+      {/* Export Modal */}
+      <DataExport
+        data={exportData}
+        isOpen={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        filename={`orders_export_${new Date().toISOString().split('T')[0]}`}
+        title="Export Orders Data"
+      />
     </div>
   )
-} 
+}

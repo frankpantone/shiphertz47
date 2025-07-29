@@ -73,7 +73,7 @@ export default function Dashboard() {
 
         // Fetch quotes for these requests
         if (requestsData && requestsData.length > 0) {
-          const requestIds = requestsData.map(r => r.id)
+          const requestIds = requestsData.map((r: any) => r.id)
           const { data: quotesData, error: quotesError } = await supabase
             .from('quotes')
             .select('id, transportation_request_id, total_amount, is_active, created_at')
@@ -86,7 +86,7 @@ export default function Dashboard() {
           } else {
             // Group quotes by request ID
             const quotesByRequest: Record<string, RecentQuote[]> = {}
-            quotesData?.forEach(quote => {
+            quotesData?.forEach((quote: any) => {
               if (!quotesByRequest[quote.transportation_request_id]) {
                 quotesByRequest[quote.transportation_request_id] = []
               }

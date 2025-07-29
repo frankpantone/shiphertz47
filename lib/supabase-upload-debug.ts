@@ -135,9 +135,9 @@ export async function debugSupabaseUpload(
       log('Bucket list error (trying upload anyway)', bucketsError)
       log('⚠️ Cannot list buckets due to permissions, but bucket may exist')
     } else {
-      const targetBucket = buckets?.find(b => b.name === bucketName)
+      const targetBucket = buckets?.find((b: any) => b.name === bucketName)
       if (!targetBucket) {
-        log('Available buckets', buckets?.map(b => b.name))
+        log('Available buckets', buckets?.map((b: any) => b.name))
         log('⚠️ Bucket not found in list, but may exist due to permissions')
       } else {
         log('Bucket found', targetBucket)

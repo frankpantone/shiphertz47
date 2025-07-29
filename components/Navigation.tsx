@@ -11,6 +11,7 @@ import {
   TruckIcon,
   ClipboardDocumentListIcon
 } from '@heroicons/react/24/outline'
+// import NotificationCenter from './NotificationCenter'
 
 function classNames(...classes: string[]) {
   return classes.filter(Boolean).join(' ')
@@ -53,6 +54,25 @@ export default function Navigation() {
           </div>
 
           <div className="flex items-center space-x-4">
+            <Link
+              href="/pricing"
+              className="text-gray-700 hover:text-primary-600 px-3 py-2 rounded-md text-sm font-medium"
+            >
+              Pricing
+            </Link>
+            <Link
+              href="/faq"
+              className="text-gray-700 hover:text-primary-600 px-3 py-2 rounded-md text-sm font-medium"
+            >
+              FAQ
+            </Link>
+            <Link
+              href="/track"
+              className="text-gray-700 hover:text-primary-600 px-3 py-2 rounded-md text-sm font-medium"
+            >
+              Track Order
+            </Link>
+            
             {user ? (
               <>
                 <Link
@@ -77,6 +97,9 @@ export default function Navigation() {
                     Admin
                   </Link>
                 )}
+
+                {/* Notification Center - Temporarily disabled due to missing notifications table */}
+                {/* <NotificationCenter /> */}
 
                 {/* Profile dropdown */}
                 <Menu as="div" className="relative ml-3">

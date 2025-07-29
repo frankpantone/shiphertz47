@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'react-hot-toast'
 import { supabase } from '@/lib/supabase'
 import { getRawSession } from '@/lib/auth-raw'
-import AddressInput from '@/components/AddressInput'
+import AddressInput from '@/components/AddressInputWrapper'
 import MultiVinInput, { Vehicle } from '@/components/MultiVinInput'
 import FileUpload from '@/components/FileUpload'
 import { AddressResult } from '@/lib/google-maps-fixed'
@@ -158,6 +158,7 @@ export default function TransportationRequestPage() {
   }
 
   const uploadFiles = async (requestId: string, files: File[]) => {
+    // Re-enabled file upload functionality
     console.log('📁 Starting file upload for request:', requestId)
     const uploadedAttachments = []
 
@@ -242,6 +243,7 @@ export default function TransportationRequestPage() {
   }
 
   const handleSubmit = async () => {
+    // Re-enabled form submission for testing
     console.log('🚀 Starting form submission...')
     console.log('Current step:', currentStep)
     console.log('User:', user)
@@ -518,15 +520,17 @@ export default function TransportationRequestPage() {
               </div>
             </div>
 
-            <AddressInput
-              label="Company Address"
-              placeholder="Enter pickup address"
-              value={formData.pickupCompanyAddress}
-              onChange={(address) => updateFormData('pickupCompanyAddress', address)}
-              onAddressSelected={handlePickupAddressSelected}
-              required
-              error={errors.pickupCompanyAddress}
-            />
+            <div>
+              <AddressInput
+                label="Company Address *"
+                placeholder="Enter pickup address"
+                value={formData.pickupCompanyAddress}
+                onChange={(address) => updateFormData('pickupCompanyAddress', address)}
+                onAddressSelected={handlePickupAddressSelected}
+                error={errors.pickupCompanyAddress}
+                required={true}
+              />
+            </div>
 
             <div>
               <label className="label">Contact Phone *</label>
@@ -578,15 +582,17 @@ export default function TransportationRequestPage() {
               </div>
             </div>
 
-            <AddressInput
-              label="Company Address"
-              placeholder="Enter delivery address"
-              value={formData.deliveryCompanyAddress}
-              onChange={(address) => updateFormData('deliveryCompanyAddress', address)}
-              onAddressSelected={handleDeliveryAddressSelected}
-              required
-              error={errors.deliveryCompanyAddress}
-            />
+            <div>
+              <AddressInput
+                label="Company Address *"
+                placeholder="Enter delivery address"
+                value={formData.deliveryCompanyAddress}
+                onChange={(address) => updateFormData('deliveryCompanyAddress', address)}
+                onAddressSelected={handleDeliveryAddressSelected}
+                error={errors.deliveryCompanyAddress}
+                required={true}
+              />
+            </div>
 
             <div>
               <label className="label">Contact Phone *</label>
@@ -608,11 +614,16 @@ export default function TransportationRequestPage() {
           <div className="space-y-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">Vehicle Information</h2>
             
-            <MultiVinInput
-              vehicles={formData.vehicles}
-              onChange={handleVehiclesChange}
-              required
-            />
+            <div>
+              <MultiVinInput
+                vehicles={formData.vehicles}
+                onChange={handleVehiclesChange}
+                required={true}
+              />
+              {errors.vehicles && (
+                <p className="text-sm text-red-600 mt-1">{errors.vehicles}</p>
+              )}
+            </div>
 
             <div>
               <label className="label">Additional Notes</label>
@@ -730,4 +741,8 @@ export default function TransportationRequestPage() {
       </div>
     </div>
   )
-} 
+}
+
+// Force dynamic rendering to avoid SSR issues with Google Maps
+export const dynamic = 'force-dynamic'
+export const revalidate = 0 

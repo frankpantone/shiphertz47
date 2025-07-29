@@ -5,6 +5,10 @@ let isLoaded = false
 
 // Initialize Google Maps with proper library loading
 export const initializeGoogleMaps = async (): Promise<any> => {
+  if (typeof window === 'undefined') {
+    throw new Error('Google Maps can only be initialized in the browser')
+  }
+  
   if (isLoaded && window.google?.maps) {
     return window.google.maps
   }

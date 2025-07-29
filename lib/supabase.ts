@@ -9,7 +9,10 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 // Client-side Supabase client
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey)
+// Only create on client to avoid SSR issues
+export const supabase = typeof window !== 'undefined'
+  ? createClient<Database>(supabaseUrl, supabaseAnonKey)
+  : null as any
 
 // Admin client for service operations
 export const createAdminSupabase = () => {
